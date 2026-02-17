@@ -1,0 +1,13 @@
+build/
+*.obj
+*.o
+*.a
+*.so
+*.dll
+*.exe
+*.pdb
+.git/
+.vscode/
+__pycache__/
+*.pyc
+.DS_Store
