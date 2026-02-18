@@ -1,0 +1,5 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/MinkowskiEngineTargets.cmake")
+
+# Optional: users can reference include directories via target properties

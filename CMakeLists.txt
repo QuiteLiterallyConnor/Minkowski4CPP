@@ -10,18 +10,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find LibTorch
+# Set CMAKE_PREFIX_PATH to your LibTorch installation:
+#   Windows: cmake -DCMAKE_PREFIX_PATH=E:/Code/libtorch ..
+#   Linux:   cmake -DCMAKE_PREFIX_PATH=/opt/libtorch/share/cmake/Torch ..
+#   Or set it here: set(CMAKE_PREFIX_PATH "E:/Code/libtorch")
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 # MSVC-specific: Use standards-conforming preprocessor for CUDA compatibility
 if(MSVC)
-    add_compile_options(/Zc:preprocessor)
-    # Also disable warnings about the preprocessor switch
-    add_compile_options(/wd5105)
+    # Apply MSVC flags only to C++ compilation, not CUDA
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/wd5105>)
+    # Suppress C4267: conversion from size_t to int/uint (common in PyTorch headers)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/wd4267>)
 endif()
-
-# Find Python (needed for torch/extension.h includes)
-find_package(Python COMPONENTS Interpreter Development)
 
 # Find CUDA (if not CPU_ONLY)
 if(NOT CPU_ONLY)
@@ -29,25 +32,45 @@ if(NOT CPU_ONLY)
     find_package(CUDAToolkit REQUIRED)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+    # Define USE_CUDA so PyTorch headers enable correct Windows+CUDA code paths
+    # (e.g. compiled_autograd.h uses this to bypass if-constexpr that fails with NVCC+MSVC)
+    add_compile_definitions(USE_CUDA)
+    
+    # MSVC + CUDA: Pass compiler flags to host compiler via CUDA
+    if(MSVC)
+        # Force-include cuda_common.hpp to set up MSVC workarounds before any other includes
+        add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/FI${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/cuda_common.hpp>)
+        # Suppress CCCL warning about traditional preprocessor
+        add_compile_definitions($<$<COMPILE_LANGUAGE:CUDA>:CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING>)
+        add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/wd5105>)
+        # Suppress C4267: conversion from size_t to int/uint (common in PyTorch headers)
+        add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/wd4267>)
+        # Suppress C4244: conversion from larger to smaller type (common in PyTorch headers)
+        add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/wd4244>)
+        # Suppress C4804: unsafe bool in operation (from cudf wrapper_types.hpp)
+        add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/wd4804>)
+    endif()
 endif()
 
 # OpenMP (used by the kernel code)
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    if(MSVC)
+        # Use LLVM-based OpenMP on MSVC for modern OpenMP 3.1+ features (atomic capture, etc.)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /openmp:llvm")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /openmp:llvm")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    endif()
 endif()
 
-# Include directories
-include_directories(
-    /usr/include/python3.10
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/mink
-    ${CMAKE_CURRENT_SOURCE_DIR}/mink/3rdparty
-)
+# Include directories are set per-target below (not globally) so that
+# absolute source paths don't leak into exported INTERFACE_INCLUDE_DIRECTORIES.
 
 # Collect kernel source files
 file(GLOB MINK_CPU_SOURCES
-    "mink/*.cpp"
+    "MinkowskiEngine/src/*.cpp"
 )
 
 # Exclude files that are not part of the kernel library
@@ -56,7 +79,7 @@ list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*example.*")
 
 if(NOT CPU_ONLY)
     file(GLOB MINK_GPU_SOURCES
-        "mink/*.cu"
+        "MinkowskiEngine/src/*.cu"
     )
     list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*test.*")
     list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*example.*")
@@ -70,9 +93,10 @@ else()
     add_library(minkowski_kernel STATIC ${MINK_CPU_SOURCES} ${MINK_GPU_SOURCES})
     
     # CUDA compilation flags
+    # Note: CUDA_SEPARABLE_COMPILATION can cause issues with MSVC+Ninja dependency tracking
+    # Disable for now - may need whole-program optimization flags if needed
     set_target_properties(minkowski_kernel PROPERTIES
-        CUDA_SEPARABLE_COMPILATION ON
-        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+        CUDA_SEPARABLE_COMPILATION OFF
     )
     
     # CUDA architectures - reduced set to lower memory usage during compilation
@@ -100,9 +124,17 @@ if(WIN32)
 endif()
 
 # Include directories for kernel
-target_include_directories(minkowski_kernel PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/mink
-    ${CMAKE_CURRENT_SOURCE_DIR}/mink/3rdparty
+# PRIVATE: source-tree paths needed only for building this target
+target_include_directories(minkowski_kernel PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
+# INTERFACE: install-tree paths for downstream consumers after install
+target_include_directories(minkowski_kernel INTERFACE
+    $<INSTALL_INTERFACE:include/minkowski/src>
+    $<INSTALL_INTERFACE:include/minkowski/src/3rdparty>
 )
 
 if(NOT CPU_ONLY)
@@ -112,23 +144,27 @@ if(NOT CPU_ONLY)
     )
 endif()
 
-if(Python_FOUND)
-    target_include_directories(minkowski_kernel PRIVATE ${Python_INCLUDE_DIRS})
-endif()
-
 # ============================================================================
 # New C++ Layer Library
 # ============================================================================
 
 # Collect new C++ layer sources
 file(GLOB MINK_CPP_SOURCES
-    "mink_cpp/*.cpp"
+    "MinkowskiEngine/*.cpp"
+    "MinkowskiEngine/autograd/*.cpp"
+    "MinkowskiEngine/modules/*.cpp"
+    "MinkowskiEngine/utils/*.cpp"
+    "MinkowskiEngine/training/*.cpp"
 )
 
-# Collect CUDA sources in mink_cpp (if not CPU_ONLY)
+# Collect CUDA sources in MinkowskiEngine (if not CPU_ONLY)
 if(NOT CPU_ONLY)
     file(GLOB MINK_CPP_CUDA_SOURCES
-        "mink_cpp/*.cu"
+        "MinkowskiEngine/*.cu"
+        "MinkowskiEngine/autograd/*.cu"
+        "MinkowskiEngine/modules/*.cu"
+        "MinkowskiEngine/utils/*.cu"
+        "MinkowskiEngine/training/*.cu"
     )
 endif()
 
@@ -138,9 +174,10 @@ if(CPU_ONLY)
 else()
     add_library(minkowski_cpp STATIC ${MINK_CPP_SOURCES} ${MINK_CPP_CUDA_SOURCES})
     
-    # CUDA compilation flags for mink_cpp
+    # CUDA compilation flags for MinkowskiEngine
+    # Note: CUDA_SEPARABLE_COMPILATION can cause issues with MSVC+Ninja dependency tracking
     set_target_properties(minkowski_cpp PROPERTIES
-        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_SEPARABLE_COMPILATION OFF
     )
     
     # Same reduced architecture set as kernel library
@@ -154,10 +191,18 @@ target_link_libraries(minkowski_cpp PUBLIC
 )
 
 # Include directories for C++ layer
-target_include_directories(minkowski_cpp PUBLIC
+# PRIVATE: source-tree paths needed only for building this target
+target_include_directories(minkowski_cpp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/mink_cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/mink
+    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine
+    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
+# INTERFACE: install-tree paths for downstream consumers after install
+target_include_directories(minkowski_cpp INTERFACE
+    $<INSTALL_INTERFACE:include/minkowski>
+    $<INSTALL_INTERFACE:include/minkowski/src>
 )
 
 # Compile definitions
@@ -170,53 +215,84 @@ if(WIN32)
 endif()
 
 # ============================================================================
-# Tests (optional)
+# Test executable: train
 # ============================================================================
 
-option(BUILD_TESTS "Build test executables" ON)
-
-if(BUILD_TESTS)
-    # Phase 1 test
-    add_executable(phase1_test tests/phase1_test.cpp)
-    target_link_libraries(phase1_test PRIVATE minkowski_cpp)
-    if(WIN32)
-        target_compile_definitions(phase1_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-    endif()
-    
-    # Add more test executables here when ready
-    # add_executable(test_sparse_tensor tests/test_sparse_tensor.cpp)
-    # target_link_libraries(test_sparse_tensor PRIVATE minkowski_cpp)
+add_executable(train tests/train.cpp)
+target_link_libraries(train PRIVATE minkowski_cpp ${TORCH_LIBRARIES})
+target_include_directories(train PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine
+    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
+if(CPU_ONLY)
+    target_compile_definitions(train PRIVATE CPU_ONLY)
 endif()
-
-# ============================================================================
-# Examples (optional)
-# ============================================================================
-
-option(BUILD_EXAMPLES "Build example executables" ON)
-
-if(BUILD_EXAMPLES)
-    # Phase 0 test example
-    add_executable(phase0_test examples/phase0_test.cpp)
-    target_link_libraries(phase0_test PRIVATE minkowski_cpp)
-    
-    # Uncomment when ready:
-    # add_executable(example_unet examples/example_unet.cpp)
-    # target_link_libraries(example_unet PRIVATE minkowski_cpp)
+if(WIN32)
+    target_compile_definitions(train PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
+target_compile_definitions(train PRIVATE MINK_NO_PYBIND)
 
 # ============================================================================
-# Installation
+# Installation and CMake package config
 # ============================================================================
 
 install(TARGETS minkowski_kernel minkowski_cpp
+    EXPORT MinkowskiEngineTargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
 )
 
-install(DIRECTORY mink_cpp/
+install(DIRECTORY MinkowskiEngine/
     DESTINATION include/minkowski
-    FILES_MATCHING PATTERN "*.hpp"
+    FILES_MATCHING
+      PATTERN "*.hpp"
+      PATTERN "*.h"
+      PATTERN "*.hh"
+      PATTERN "*.hxx"
+      PATTERN "*.inl"
+      PATTERN "*.cuh"
+)
+
+# Create namespaced alias for consumption: use `MinkowskiEngine::MinkowskiEngine`
+add_library(MinkowskiEngine::MinkowskiEngine ALIAS minkowski_cpp)
+# Also provide alias matching exported target name (export uses the target name `minkowski_cpp`)
+add_library(MinkowskiEngine::minkowski_cpp ALIAS minkowski_cpp)
+
+# On Windows, when building shared libs, this helps export symbols automatically.
+if(WIN32)
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
+# Export target for use with find_package(... CONFIG)
+include(CMakePackageConfigHelpers)
+set(CONFIG_INSTALL_DIR lib/cmake/MinkowskiEngine)
+
+configure_package_config_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/MinkowskiEngineConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/MinkowskiEngineConfig.cmake
+    INSTALL_DESTINATION ${CONFIG_INSTALL_DIR}
+    NO_SET_AND_CHECK_MACRO
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/MinkowskiEngineConfigVersion.cmake
+    VERSION 1.0.0
+    COMPATIBILITY AnyNewerVersion
+)
+
+install(EXPORT MinkowskiEngineTargets
+    FILE MinkowskiEngineTargets.cmake
+    NAMESPACE MinkowskiEngine::
+    DESTINATION ${CONFIG_INSTALL_DIR}
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/MinkowskiEngineConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/MinkowskiEngineConfigVersion.cmake
+    DESTINATION ${CONFIG_INSTALL_DIR}
 )
 
 # ============================================================================

@@ -1,7 +1,6 @@
 /workspace/build/CMakeFiles/minkowski_kernel.dir
 /workspace/build/CMakeFiles/minkowski_cpp.dir
-/workspace/build/CMakeFiles/phase1_test.dir
-/workspace/build/CMakeFiles/phase0_test.dir
+/workspace/build/CMakeFiles/train.dir
 /workspace/build/CMakeFiles/edit_cache.dir
 /workspace/build/CMakeFiles/rebuild_cache.dir
 /workspace/build/CMakeFiles/list_install_components.dir

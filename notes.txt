@@ -11,12 +11,15 @@ $sdkInc = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0"
 
 $cmake = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 
+docker run --rm -it --gpus all -v "${PWD}:/workspace" minkowski-cu131 bash
 
 cd /workspace/build
 rm -rf *
 cmake -G Ninja \
   -DCMAKE_PREFIX_PATH=/opt/libtorch \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-  -DPython3_INCLUDE_DIR=/usr/include/python3.10 \
   ..
-ninja
+ninja -j4
+
+libtorch version: 2.10.0
+cuda version: 13.1.1
