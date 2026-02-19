@@ -1,0 +1,6 @@
+_staging
+.wix
+_License.rtf
+_MinkowskiEngine.wxs
+*.msi
+*.wixpdb
