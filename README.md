@@ -95,6 +95,19 @@ MinkowskiEngine is a library for sparse tensor operations commonly used in 3D de
 
 ---
 
+Credit to:
+
+    4D Spatio-Temporal ConvNets: Minkowski Convolutional Neural Networks, CVPR'19, [pdf]
+
+@inproceedings{choy20194d,
+  title={4D Spatio-Temporal ConvNets: Minkowski Convolutional Neural Networks},
+  author={Choy, Christopher and Gwak, JunYoung and Savarese, Silvio},
+  booktitle={Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition},
+  pages={3075--3084},
+  year={2019}
+}
+
+
 ## License
 
 This project is a derivative work of [MinkowskiEngine](https://github.com/NVIDIA/MinkowskiEngine) by NVIDIA. Please refer to the original project's license for terms governing the underlying implementation.
