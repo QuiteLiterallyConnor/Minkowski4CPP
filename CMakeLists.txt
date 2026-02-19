@@ -68,88 +68,12 @@ endif()
 # Include directories are set per-target below (not globally) so that
 # absolute source paths don't leak into exported INTERFACE_INCLUDE_DIRECTORIES.
 
-# Collect kernel source files
+# ============================================================================
+# Collect ALL source files (kernel + C++ layer)
+# ============================================================================
+
 file(GLOB MINK_CPU_SOURCES
     "MinkowskiEngine/src/*.cpp"
-)
-
-# Exclude files that are not part of the kernel library
-list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*test.*")
-list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*example.*")
-
-if(NOT CPU_ONLY)
-    file(GLOB MINK_GPU_SOURCES
-        "MinkowskiEngine/src/*.cu"
-    )
-    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*test.*")
-    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*example.*")
-endif()
-
-# Create kernel library target
-if(CPU_ONLY)
-    add_library(minkowski_kernel STATIC ${MINK_CPU_SOURCES})
-    target_compile_definitions(minkowski_kernel PUBLIC CPU_ONLY)
-else()
-    add_library(minkowski_kernel STATIC ${MINK_CPU_SOURCES} ${MINK_GPU_SOURCES})
-    
-    # CUDA compilation flags
-    # Note: CUDA_SEPARABLE_COMPILATION can cause issues with MSVC+Ninja dependency tracking
-    # Disable for now - may need whole-program optimization flags if needed
-    set_target_properties(minkowski_kernel PROPERTIES
-        CUDA_SEPARABLE_COMPILATION OFF
-    )
-    
-    # CUDA architectures - reduced set to lower memory usage during compilation
-    # 75: Turing (RTX 20xx), 80: Ampere (RTX 30xx, A100), 86: Ampere (RTX 30xx laptop)
-    set_property(TARGET minkowski_kernel PROPERTY CUDA_ARCHITECTURES 75 80 86)
-endif()
-
-# Link libraries for kernel
-target_link_libraries(minkowski_kernel PUBLIC ${TORCH_LIBRARIES})
-
-if(NOT CPU_ONLY)
-    target_link_libraries(minkowski_kernel PUBLIC CUDA::cusparse CUDA::cublas CUDA::cudart)
-endif()
-
-if(OpenMP_CXX_FOUND)
-    target_link_libraries(minkowski_kernel PUBLIC OpenMP::OpenMP_CXX)
-endif()
-
-# Compile definitions for kernel library
-target_compile_definitions(minkowski_kernel PUBLIC MINK_NO_PYBIND)
-
-# Windows-specific definitions to prevent macro conflicts
-if(WIN32)
-    target_compile_definitions(minkowski_kernel PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
-endif()
-
-# Include directories for kernel
-# PRIVATE: source-tree paths needed only for building this target
-target_include_directories(minkowski_kernel PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-)
-# INTERFACE: install-tree paths for downstream consumers after install
-target_include_directories(minkowski_kernel INTERFACE
-    $<INSTALL_INTERFACE:include/minkowski/src>
-    $<INSTALL_INTERFACE:include/minkowski/src/3rdparty>
-)
-
-if(NOT CPU_ONLY)
-    target_include_directories(minkowski_kernel PUBLIC
-        ${CUDAToolkit_INCLUDE_DIRS}
-        ${CUDAToolkit_INCLUDE_DIRS}/cccl
-    )
-endif()
-
-# ============================================================================
-# New C++ Layer Library
-# ============================================================================
-
-# Collect new C++ layer sources
-file(GLOB MINK_CPP_SOURCES
     "MinkowskiEngine/*.cpp"
     "MinkowskiEngine/autograd/*.cpp"
     "MinkowskiEngine/modules/*.cpp"
@@ -157,40 +81,63 @@ file(GLOB MINK_CPP_SOURCES
     "MinkowskiEngine/training/*.cpp"
 )
 
-# Collect CUDA sources in MinkowskiEngine (if not CPU_ONLY)
+# Exclude files that are not part of the library
+list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*test.*")
+list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*example.*")
+
 if(NOT CPU_ONLY)
-    file(GLOB MINK_CPP_CUDA_SOURCES
+    file(GLOB MINK_GPU_SOURCES
+        "MinkowskiEngine/src/*.cu"
         "MinkowskiEngine/*.cu"
         "MinkowskiEngine/autograd/*.cu"
         "MinkowskiEngine/modules/*.cu"
         "MinkowskiEngine/utils/*.cu"
         "MinkowskiEngine/training/*.cu"
     )
+    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*test.*")
+    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*example.*")
 endif()
 
-# Create the new C++ layer library
+# ============================================================================
+# Unified minkowski_cpp library (kernel + C++ layer)
+# ============================================================================
+
 if(CPU_ONLY)
-    add_library(minkowski_cpp STATIC ${MINK_CPP_SOURCES})
+    add_library(minkowski_cpp STATIC ${MINK_CPU_SOURCES})
+    target_compile_definitions(minkowski_cpp PUBLIC CPU_ONLY)
 else()
-    add_library(minkowski_cpp STATIC ${MINK_CPP_SOURCES} ${MINK_CPP_CUDA_SOURCES})
-    
-    # CUDA compilation flags for MinkowskiEngine
+    add_library(minkowski_cpp STATIC ${MINK_CPU_SOURCES} ${MINK_GPU_SOURCES})
+
+    # CUDA compilation flags
     # Note: CUDA_SEPARABLE_COMPILATION can cause issues with MSVC+Ninja dependency tracking
     set_target_properties(minkowski_cpp PROPERTIES
         CUDA_SEPARABLE_COMPILATION OFF
     )
-    
-    # Same reduced architecture set as kernel library
+
+    # CUDA architectures - reduced set to lower memory usage during compilation
+    # 75: Turing (RTX 20xx), 80: Ampere (RTX 30xx, A100), 86: Ampere (RTX 30xx laptop)
     set_property(TARGET minkowski_cpp PROPERTY CUDA_ARCHITECTURES 75 80 86)
 endif()
 
-# Link against kernel library and LibTorch
-target_link_libraries(minkowski_cpp PUBLIC
-    minkowski_kernel
-    ${TORCH_LIBRARIES}
-)
+# Link libraries
+target_link_libraries(minkowski_cpp PUBLIC ${TORCH_LIBRARIES})
 
-# Include directories for C++ layer
+if(NOT CPU_ONLY)
+    target_link_libraries(minkowski_cpp PUBLIC CUDA::cusparse CUDA::cublas CUDA::cudart)
+endif()
+
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(minkowski_cpp PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+# Compile definitions
+target_compile_definitions(minkowski_cpp PUBLIC MINK_NO_PYBIND)
+
+if(WIN32)
+    target_compile_definitions(minkowski_cpp PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
+# Include directories
 # PRIVATE: source-tree paths needed only for building this target
 target_include_directories(minkowski_cpp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -203,15 +150,14 @@ target_include_directories(minkowski_cpp PRIVATE
 target_include_directories(minkowski_cpp INTERFACE
     $<INSTALL_INTERFACE:include/minkowski>
     $<INSTALL_INTERFACE:include/minkowski/src>
+    $<INSTALL_INTERFACE:include/minkowski/src/3rdparty>
 )
 
-# Compile definitions
-if(CPU_ONLY)
-    target_compile_definitions(minkowski_cpp PUBLIC CPU_ONLY)
-endif()
-
-if(WIN32)
-    target_compile_definitions(minkowski_cpp PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+if(NOT CPU_ONLY)
+    target_include_directories(minkowski_cpp PUBLIC
+        ${CUDAToolkit_INCLUDE_DIRS}
+        ${CUDAToolkit_INCLUDE_DIRS}/cccl
+    )
 endif()
 
 # ============================================================================
@@ -239,7 +185,7 @@ target_compile_definitions(train PRIVATE MINK_NO_PYBIND)
 # Installation and CMake package config
 # ============================================================================
 
-install(TARGETS minkowski_kernel minkowski_cpp
+install(TARGETS minkowski_cpp
     EXPORT MinkowskiEngineTargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib

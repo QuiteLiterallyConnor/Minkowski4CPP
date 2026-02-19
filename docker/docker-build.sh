@@ -1,39 +1,79 @@
-#!/bin/bash
-# Build script for MinkowskiEngine C++ in Docker
+#!/usr/bin/env bash
+#
+# Build and push the Minkowski4CPP Docker image to Docker Hub.
+#
+# Usage:
+#   ./docker-build.sh                       # build only
+#   ./docker-build.sh --push                # build and push
+#   ./docker-build.sh --push --tag 1.0.0    # build and push with custom tag
+#
+# Environment variables (override defaults):
+#   DOCKER_REPO   – Docker Hub repository  (default: minkowski4cpp)
+#   DOCKER_USER   – Docker Hub username     (default: read from `docker info`)
+#
 
-set -e
+set -euo pipefail
 
-echo "==================================="
-echo "Building MinkowskiEngine C++ (CUDA)"
-echo "==================================="
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Clean and create build directory
-rm -rf build
-mkdir -p build
-cd build
+# ── Defaults ──────────────────────────────────────────────────────────────────
+DOCKER_REPO="${DOCKER_REPO:-minkowski4cpp}"
+DOCKER_USER="${DOCKER_USER:-}"
+TAG="latest"
+PUSH=false
 
-# Show CUDA version
-nvcc --version
+# ── Parse arguments ──────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --push)   PUSH=true; shift ;;
+        --tag)    TAG="$2"; shift 2 ;;
+        --user)   DOCKER_USER="$2"; shift 2 ;;
+        --repo)   DOCKER_REPO="$2"; shift 2 ;;
+        --help|-h)
+            echo "Usage: $0 [--push] [--tag TAG] [--user DOCKER_USER] [--repo DOCKER_REPO]"
+            exit 0
+            ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
 
-# Configure with CMake with explicit CUDA path
-echo "Configuring with CMake..."
-cmake -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_PREFIX_PATH=/opt/libtorch \
-    -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-    -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda \
-    -DCMAKE_CUDA_ARCHITECTURES="60;70;75;80;86" \
-    ..
+# ── Resolve image name ───────────────────────────────────────────────────────
+if [[ -z "${DOCKER_USER}" ]]; then
+    IMAGE_NAME="${DOCKER_REPO}:${TAG}"
+else
+    IMAGE_NAME="${DOCKER_USER}/${DOCKER_REPO}:${TAG}"
+fi
 
-# Build
-echo "Building..."
-cmake --build . --config Release -j$(nproc)
+echo "============================================"
+echo " Minkowski4CPP Docker Build"
+echo "============================================"
+echo " Image:   ${IMAGE_NAME}"
+echo " Context: ${PROJECT_ROOT}"
+echo " Push:    ${PUSH}"
+echo "============================================"
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+docker build \
+    -t "${IMAGE_NAME}" \
+    -f "${SCRIPT_DIR}/Dockerfile" \
+    "${PROJECT_ROOT}"
 
 echo ""
-echo "==================================="
-echo "Build complete!"
-echo "==================================="
-echo ""
-echo "Executables:"
-ls -lh phase1_test phase0_test 2>/dev/null || echo "  (test executables not found)"
-echo ""
+echo "Successfully built: ${IMAGE_NAME}"
+
+# ── Push (optional) ──────────────────────────────────────────────────────────
+if [[ "${PUSH}" == true ]]; then
+    echo "Pushing ${IMAGE_NAME} to Docker Hub..."
+    docker push "${IMAGE_NAME}"
+
+    # If a version tag was given, also tag and push as 'latest'
+    if [[ "${TAG}" != "latest" ]]; then
+        LATEST_NAME="${IMAGE_NAME%%:*}:latest"
+        docker tag "${IMAGE_NAME}" "${LATEST_NAME}"
+        docker push "${LATEST_NAME}"
+        echo "Also pushed: ${LATEST_NAME}"
+    fi
+
+    echo "Push complete."
+fi
