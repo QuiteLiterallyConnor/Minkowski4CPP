@@ -1,2 +1,7 @@
 build/*
 build
+build/
+*.deb
+*.msi
+*.wixpdb
+apt/minkowski-repo/
