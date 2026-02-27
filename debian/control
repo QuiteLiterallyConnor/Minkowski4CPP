@@ -1,0 +1,13 @@
+Source: minkowski4cpp
+Section: libs
+Priority: optional
+Maintainer: Connor Hogan <quiteliterallyconnor@gmail.com>
+Build-Depends: debhelper-compat (= 13), cmake, ninja-build
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: minkowski4cpp
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Sparse tensor engine in C++
+ C++ port of NVIDIA MinkowskiEngine.

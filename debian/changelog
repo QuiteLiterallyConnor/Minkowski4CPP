@@ -1,0 +1,5 @@
+minkowski4cpp (1.0.0-0ubuntu1~ppa1) jammy; urgency=medium
+
+  * Initial PPA release.
+
+ -- Connor Hogan <quiteliterallyconnor@gmail.com>  Thu, 26 Feb 2026 19:57:42 -0600
