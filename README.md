@@ -89,6 +89,30 @@ cmake -G Ninja \
 ninja -j4
 ```
 
+### Linux — Debian Package (.deb)
+
+**From Windows** (requires Docker Desktop in Linux containers mode — no Linux toolchain needed):
+
+```powershell
+.\apt\build-apt.ps1
+```
+
+**From Linux** (native, no Docker — requires CMake, Ninja, and LibTorch):
+
+```bash
+chmod +x apt/build-apt.sh
+./apt/build-apt.sh --libtorch /opt/libtorch
+```
+
+Both scripts write `libminkowski-cpp-dev_1.0.0_amd64.deb` to the `apt/` directory. Install it on any Ubuntu 22.04 machine:
+
+```bash
+sudo dpkg -i libminkowski-cpp-dev_1.0.0_amd64.deb
+sudo ldconfig
+```
+
+See [apt/README.md](apt/README.md) for all parameters and details.
+
 ---
 
 ## Usage Examples
