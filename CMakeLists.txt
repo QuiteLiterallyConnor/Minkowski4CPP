@@ -138,6 +138,7 @@ file(GLOB MINK_CPU_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/modules/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/utils/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/training/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/adaptive/*.cpp"
 )
 
 list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*test.*")
@@ -349,6 +350,46 @@ if(MINK_BUILD_TESTS)
             $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
         )
     endif()
+
+endif()
+
+# Adaptive voxelization tests and benchmark (see plan.txt).
+option(MINK_BUILD_ADAPTIVE_TESTS "Build adaptive voxelization tests and benchmarks" ON)
+
+if(MINK_BUILD_ADAPTIVE_TESTS)
+
+    add_executable(adaptive_tests
+        tests/adaptive/main.cpp
+        tests/adaptive/test_geometry.cpp
+        tests/adaptive/test_topology.cpp
+        tests/adaptive/test_numerical.cpp
+        tests/adaptive/test_gradients.cpp
+        tests/adaptive/test_regression.cpp
+    )
+
+    add_executable(adaptive_bench
+        tests/adaptive/bench_adaptive.cpp
+    )
+
+    foreach(tgt adaptive_tests adaptive_bench)
+        target_link_libraries(${tgt} PRIVATE minkowski_cpp)
+        target_include_directories(${tgt} PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(${tgt} PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+    endforeach()
+
+    enable_testing()
+    add_test(NAME adaptive_tests COMMAND adaptive_tests)
 
 endif()
 

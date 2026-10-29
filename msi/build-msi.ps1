@@ -19,7 +19,7 @@
 #
 # Usage
 # -----
-#   .\build-msi.ps1 -BuildDir ..\build -Version 1.0.0
+#   .\build-msi.ps1 -BuildDir ..\build -Version 1.2.0
 #
 # =============================================================================
 
@@ -27,7 +27,7 @@
 param(
     # Semantic version embedded in the MSI (Major.Minor.Patch).
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = "1.0.0",
+    [string]$Version = "1.2.0",
 
     # Path to the CMake build directory (must already be built).
     [string]$BuildDir = "..\build",

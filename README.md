@@ -6,6 +6,13 @@
 
 Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine](https://github.com/NVIDIA/MinkowskiEngine) into native C++ workflows, with first-class CUDA acceleration on both major platforms, something the original Python-based library does not support.
 
+> ### Adaptive (mixed-resolution) voxelization is built in
+> Beyond the standard uniform sparse tensor, this library includes **adaptive resolution voxelization**: a single sparse tensor can hold voxels at **different resolutions** (octree-style, up to a configurable depth). Refine only the regions that matter, such as a region of interest or dense or high-variance areas, and keep the rest coarse. Convolution, pooling, interpolation and resampling all work across resolution boundaries, are differentiable, and run on CPU and CUDA. It is opt-in and leaves the uniform `SparseTensor` API unchanged.
+>
+> - **Overview and API:** [Adaptive (mixed-resolution) voxelization](#adaptive-mixed-resolution-voxelization)
+> - **Usage examples:** [Adaptive examples](#adaptive-examples)
+> - **Measured benefit:** 41,376 adaptive voxels versus about 35 million for the equivalent uniform grid in the included benchmark.
+
 ---
 
 ## Platform Support
@@ -392,6 +399,206 @@ int main() {
 
 For a complete real-world training example with data loading, checkpointing, and evaluation, see [tests/train.cpp](tests/train.cpp).
 Run it by passing in the data directory found in the tests directory as --data_dir
+
+---
+
+## Adaptive (mixed-resolution) voxelization
+
+`MinkowskiEngine/adaptive/` adds an opt-in sparse tensor whose leaves live at different resolutions
+(quadtree/octree-style), alongside the unchanged uniform `SparseTensor`. Include
+`MinkowskiEngine/adaptive/adaptive.hpp`; everything is in `minkowski::adaptive`.
+
+- **Hierarchy**: level 0 has voxel size `base_voxel_size`; each level halves it, down to
+  `min_voxel_size` (`base / min == 2^max_depth`). A leaf is `(level, integer coords)`; a point belongs
+  to the half-open box `[c*s, (c+1)*s)`.
+- **Topology edits**: `refine(region, target_level, RefinePolicy::Replicate|Split)`,
+  `coarsen(region, target_level, Reduction::Mean|Sum|Max)`, `refine_if`, `refine_by_density`,
+  `refine_by_variance`, `revoxelize_from_points`. Topologies are immutable and versioned.
+- **Convolution** (`adaptive_convolution`, plus transpose, pooling, global average pool and
+  `interpolate`): the kernel is applied at each output leaf's own scale, sampling the neighbor at
+  `center + offset * output_voxel_size`. Modes: `CenterSampled`, `VolumeWeighted`,
+  `OverlapWeighted` (weights = overlap volume / output volume). Kernel maps are cached per topology.
+- **Differentiable**: feature ops are built from torch ops, so autograd works; topology decisions are not
+  differentiable. The code runs on CPU and on CUDA (tensor ops run on the feature tensor's device;
+  hierarchy and kernel-map construction run on the host). There is no ROCm backend in this repo.
+
+```cpp
+using namespace minkowski::adaptive;
+
+AdaptiveVoxelConfig cfg;
+cfg.base_voxel_size = {8.0, 8.0, 8.0};
+cfg.min_voxel_size  = {0.5, 0.5, 0.5};
+cfg.max_depth = 4;
+
+auto t = AdaptiveSparseTensor::from_points(points, features, cfg);   // [N,3] double, [N,C]
+t.refine(AxisAlignedRegion{{0, 0, 0}, {16, 16, 16}}, /*target_level=*/4);  // fine only in the ROI
+
+AdaptiveKernelConfig kc;                       // 3x3x3, CenterSampled
+auto out = adaptive_convolution(t, weight, kc);  // weight: [27, Cin, Cout]
+```
+
+### Adaptive examples
+
+All snippets assume `using namespace minkowski::adaptive;` and the `cfg` defined above
+(`base_voxel_size` 8, `max_depth` 4, so level 4 voxels are 0.5 wide).
+
+**1. Inspect a tensor**
+
+```cpp
+auto t = AdaptiveSparseTensor::from_points(points, features, cfg);
+std::cout << t.size() << " leaves, " << t.channels() << " channels\n";
+auto coords = t.coordinates();     // [N,3] int64, integer cell index at each leaf's own level
+auto levels = t.levels();          // [N]  int32,  0 = coarsest
+auto centers = t.centers();        // [N,3] double, physical leaf centers
+auto counts = t.counts_by_level(); // max_depth + 1 entries
+```
+
+**2. Refine and coarsen a region.** `Replicate` copies the parent feature to all 2^D children;
+`Split` divides it by 2^D so that summed features are conserved.
+
+```cpp
+AxisAlignedRegion roi{{0, 0, 0}, {16, 16, 16}};   // half-open [lo, hi)
+
+t.refine(roi, 4);                           // leaves in the ROI go to level 4
+t.refine(roi, 4, RefinePolicy::Split);      // same, conserving sums of extensive features
+t.coarsen(roi, 2, Reduction::Mean);         // merge back up to level 2 (Mean, Sum or Max)
+t.coarsen(AxisAlignedRegion::everything(3), 0, Reduction::Sum);
+```
+
+A parent is only merged if its whole box lies inside the region. Reductions use occupied
+children only.
+
+**3. Point-driven refinement.** These need a tensor made with `from_points`, which keeps the
+source points.
+
+```cpp
+t.refine_by_density(/*points_per_leaf_threshold=*/32);   // split crowded leaves
+t.refine_by_variance(/*feature_variance_threshold=*/0.5);
+t.revoxelize_from_points();                              // recompute leaf features from points
+
+// Arbitrary rule: refine leaves whose center is near the origin
+t.refine_if([](int64_t, const std::array<double, 4>& lo, const std::array<double, 4>& hi,
+               uint32_t level) {
+    double c = 0.5 * (lo[0] + hi[0]);
+    return level < 3 && std::abs(c) < 10.0;
+});
+```
+
+**4. Build from explicit voxels.** Each row is a leaf at its own level; leaves must not overlap.
+
+```cpp
+auto coords = torch::tensor({{0, 0, 0}, {2, 0, 0}, {2, 1, 0}}, torch::kInt64);
+auto levels = torch::tensor({0, 1, 1}, torch::kInt32);   // level 1 cells are half the size
+auto feats  = torch::randn({3, 8});
+auto v = AdaptiveSparseTensor::from_voxels(coords, levels, feats, cfg);
+```
+
+**5. Convolution.** The weight is `[K^D, Cin, Cout]` (27 for the default 3x3x3 kernel, first axis
+varying slowest). The kernel is applied at each output leaf's own scale, so mixed-resolution
+neighbors are handled automatically.
+
+```cpp
+auto weight = torch::randn({27, 8, 16}).set_requires_grad(true);
+
+AdaptiveKernelConfig kc;                             // kernel_size = 3
+kc.mode = AdaptiveConvMode::OverlapWeighted;         // or CenterSampled / VolumeWeighted
+auto out = adaptive_convolution(t, weight, kc);      // same leaves as t, 16 channels
+
+out.features().sum().backward();                     // gradients reach weight and features
+```
+
+Strided convolution and its transpose:
+
+```cpp
+AdaptiveKernelConfig down;
+down.output_level_shift = -1;                        // outputs are one level coarser
+auto coarse = adaptive_convolution(t, weight, down);
+
+auto w_up = torch::randn({27, 16, 8});
+auto restored = adaptive_convolution_transpose(coarse, w_up, down, /*reference=*/t);
+// restored lives on t's leaves
+```
+
+Kernel maps are cached per topology, so repeated convolutions on the same tensor only build the
+map once. `KernelMapCache::instance().stats()` reports hits and misses, and `.clear()` resets it.
+
+**6. Pooling, interpolation and resampling**
+
+```cpp
+auto global = adaptive_global_avg_pool(t);                 // [C], volume-weighted
+auto level1 = adaptive_pool(t, /*target_level=*/1, Reduction::Max);
+
+auto query = torch::tensor({{1.0, 2.0, 3.0}, {40.0, 5.0, 5.0}}, torch::kFloat64);
+auto nearest = interpolate(t, query);                      // value of the containing leaf
+auto smooth  = interpolate(t, query, InterpMode::Multilinear);
+// query points outside every leaf give zeros
+
+auto uniform = t.resample_uniform(2);                      // everything at level 2
+auto aligned = other.resample_to(t);                       // put `other` on t's leaves
+auto sum = t + aligned;                                    // + needs identical topology
+```
+
+`resample_uniform` can be very large for sparse mixed-resolution data; the benchmark skips it above
+5M voxels.
+
+**7. Use a GPU.** Feature tensors can live on CUDA; the hierarchy and kernel maps stay on the host.
+
+```cpp
+auto gt = t.to(torch::kCUDA);
+auto gout = adaptive_convolution(gt, weight.to(torch::kCUDA), kc);
+auto cpu_out = gout.to(torch::kCPU);
+```
+
+**8. Complete example: refine around a region of interest and run a small network**
+
+```cpp
+#include "MinkowskiEngine/adaptive/adaptive.hpp"
+using namespace minkowski::adaptive;
+
+int main() {
+    AdaptiveVoxelConfig cfg;
+    cfg.base_voxel_size = {8.0, 8.0, 8.0};
+    cfg.min_voxel_size  = {0.5, 0.5, 0.5};
+    cfg.max_depth = 4;
+
+    auto points = torch::rand({20000, 3}, torch::kFloat64) * 64.0;
+    auto feats  = torch::randn({20000, 4}, torch::kFloat64);
+
+    auto t = AdaptiveSparseTensor::from_points(points, feats, cfg);
+    t.refine(AxisAlignedRegion{{0, 0, 0}, {16, 16, 16}}, 4);   // fine detail only in the ROI
+
+    auto w1 = torch::randn({27, 4, 16}, torch::kFloat64).mul_(0.1).set_requires_grad(true);
+    auto w2 = torch::randn({27, 16, 2}, torch::kFloat64).mul_(0.1).set_requires_grad(true);
+
+    AdaptiveKernelConfig kc;
+    auto h = adaptive_convolution(t, w1, kc);
+    h = h.with_features(torch::relu(h.features()));
+    auto y = adaptive_convolution(h, w2, kc);
+
+    auto logits = adaptive_global_avg_pool(y);        // [2]
+    logits.sum().backward();
+    std::cout << t.size() << " leaves, logits " << logits << "\n";
+}
+```
+
+Link against `minkowski_cpp` like any other target in this repo; `tests/adaptive/` contains
+further runnable usage of every call shown here, and `adaptive_bench` shows timing.
+
+Tests: `adaptive_tests` (66 tests, CPU; CUDA agreement is checked when CUDA is available) and
+`adaptive_bench`, built by default (`-DMINK_BUILD_ADAPTIVE_TESTS=OFF` to skip):
+
+```
+cmake --build build --target adaptive_tests adaptive_bench
+```
+
+Measured with `adaptive_bench` (20k points, depth 4, CPU, Windows/CUDA 13.2 build): 41,376 adaptive
+voxels versus about 35 million for the equivalent uniform grid at the finest resolution;
+kernel-map build 221 ms, forward 14 ms, forward+backward 50 ms.
+
+Limitations: no uniform fast path (the legacy convolution is not used for single-level tensors),
+`output_level_shift > 0` is unsupported, kernel-map construction is host-side, and
+`OverlapWeighted` cost grows with the level gap between neighbors. The all-ones-kernel comparison with
+the legacy convolution agrees only in row count and total sum; per-row agreement was not established.
 
 ---
 
