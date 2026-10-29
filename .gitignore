@@ -6,3 +6,4 @@ build/
 *.wixpdb
 apt/minkowski-repo/
 debian
+.wix/

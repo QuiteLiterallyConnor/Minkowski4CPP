@@ -28,6 +28,7 @@
 #include <thrust/functional.h>
 #include <thrust/host_vector.h>
 #include <thrust/pair.h>
+#include <thrust/tuple.h>
 
 namespace minkowski {
 

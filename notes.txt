@@ -23,3 +23,8 @@ ninja -j4
 
 libtorch version: 2.10.0
 cuda version: 13.1.1
+
+ADD THIS TO THE INSTALL INSTRUCTIONS
+cuDNN 9.27.0 Downloads
+https://developer.nvidia.com/cudnn-downloads
+

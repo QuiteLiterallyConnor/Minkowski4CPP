@@ -4,7 +4,7 @@
 
 **A C++ port of NVIDIA's MinkowskiEngine with full CUDA support for Windows and Linux.**
 
-Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine](https://github.com/NVIDIA/MinkowskiEngine) into native C++ workflows, with first-class CUDA acceleration on both major platforms — something the original Python-based library does not support.
+Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine](https://github.com/NVIDIA/MinkowskiEngine) into native C++ workflows, with first-class CUDA acceleration on both major platforms, something the original Python-based library does not support.
 
 ---
 
@@ -13,7 +13,8 @@ Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine
 | Platform | CUDA Version | Torch Version | Status |
 |---|---|---|---|
 | Ubuntu 22.04 | 12.4.0 | 2.5.1 | Verified |
-| Windows | 13.1 | 2.10.0 | Verified |
+| Windows | 13.2 | 2.15.0 | Verified |
+| Windows | 13.4 | 2.15.0 | Verified |
 
 ---
 
@@ -21,8 +22,10 @@ Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine
 
 ### Windows
 
-- [CUDA Toolkit 13.1](https://developer.nvidia.com/cuda-downloads)
-- [LibTorch 2.10.0](https://pytorch.org/get-started/locally/) (pre-built, extract only)
+- [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) 13.2 or 13.4
+- [cuDNN 9.27.0](https://developer.nvidia.com/cudnn-downloads)
+- [LibTorch](https://pytorch.org/get-started/locally/) matching your CUDA version (pre-built, extract only)
+- Visual Studio 2022 with the C++ workload
 - [Ninja](https://ninja-build.org/) (extract only)
 - [CMake](https://cmake.org/download/) (install)
 
@@ -39,10 +42,11 @@ Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine
 
 ### Windows
 
-Run the provided PowerShell build script, passing paths to your CUDA installation, LibTorch directory, and Ninja executable:
+Run the provided PowerShell build script, passing the CUDA version (`-CudaVersion`: `132` or `134`) and the paths to your CUDA installation, LibTorch directory, and Ninja executable. All paths must be specified explicitly:
 
 ```powershell
 scripts\build-all-windows.ps1 `
+  -CudaVersion [132 | 134] `
   -CudaPath    [PATH TO CUDA] `
   -LibTorchPath [PATH TO TORCH] `
   -NinjaPath   [PATH TO NINJA EXECUTABLE]
@@ -52,12 +56,15 @@ scripts\build-all-windows.ps1 `
 
 ```powershell
 scripts\build-all-windows.ps1 `
-  -CudaPath     "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1" `
+  -CudaVersion  134 `
+  -CudaPath     "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4" `
   -LibTorchPath "E:\Code\libtorch" `
   -NinjaPath    "C:\Program Files\Ninja\ninja.exe"
 ```
 
----
+  When switching CUDA versions, add `-Clean` to remove the previous build directory.
+
+  ---
 
 ### Linux
 
