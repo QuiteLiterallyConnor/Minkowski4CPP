@@ -366,8 +366,43 @@ if(NOT CPU_ONLY)
 endif()
 
 if(MINK_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
-    target_link_libraries(minkowski_cpp
-        PUBLIC OpenMP::OpenMP_CXX)
+    set(MINK_IOMP_DLL "${TORCH_INSTALL_PREFIX}/lib/libiomp5md.dll")
+    set(MINK_IOMP_LIB "${CMAKE_BINARY_DIR}/libiomp5md.lib")
+    if(MSVC AND TORCH_INSTALL_PREFIX AND EXISTS "${MINK_IOMP_DLL}")
+        # LibTorch loads libiomp5md, and a second LLVM-style runtime
+        # (libomp140) in the same process aborts with "OMP: Error #15".
+        # LibTorch ships no import library, so build one from the DLL and link
+        # the engine against the runtime that is already loaded.
+        if(NOT EXISTS "${MINK_IOMP_LIB}")
+            get_filename_component(_mink_msvc_bin "${CMAKE_LINKER}" DIRECTORY)
+            execute_process(
+                COMMAND "${_mink_msvc_bin}/dumpbin.exe" /nologo /exports "${MINK_IOMP_DLL}"
+                OUTPUT_VARIABLE _mink_exports RESULT_VARIABLE _mink_dumpbin_rc)
+            set(_mink_def "LIBRARY libiomp5md\nEXPORTS\n")
+            string(REGEX MATCHALL "\n +[0-9]+ +[0-9A-F]+ +[0-9A-F]+ +[A-Za-z_0-9@?$]+"
+                   _mink_rows "${_mink_exports}")
+            foreach(_row IN LISTS _mink_rows)
+                string(REGEX REPLACE "^\n +[0-9]+ +[0-9A-F]+ +[0-9A-F]+ +" "" _name "${_row}")
+                string(APPEND _mink_def "    ${_name}\n")
+            endforeach()
+            file(WRITE "${CMAKE_BINARY_DIR}/libiomp5md.def" "${_mink_def}")
+            execute_process(
+                COMMAND "${_mink_msvc_bin}/lib.exe" /nologo /machine:x64
+                        "/def:${CMAKE_BINARY_DIR}/libiomp5md.def" "/out:${MINK_IOMP_LIB}"
+                RESULT_VARIABLE _mink_lib_rc)
+        endif()
+    endif()
+
+    if(EXISTS "${MINK_IOMP_LIB}")
+        message(STATUS "OpenMP runtime: LibTorch libiomp5md")
+        target_compile_options(minkowski_cpp PUBLIC
+            $<$<COMPILE_LANGUAGE:CXX>:/openmp:llvm>)
+        target_link_libraries(minkowski_cpp PUBLIC "${MINK_IOMP_LIB}")
+        target_link_options(minkowski_cpp PUBLIC /NODEFAULTLIB:libomp140.x86_64.lib)
+    else()
+        target_link_libraries(minkowski_cpp
+            PUBLIC OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 # ============================================================
@@ -523,6 +558,21 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
 
     enable_testing()
     add_test(NAME gaussian_tests COMMAND gaussian_tests)
+endif()
+
+# Windows resolves DLLs next to the executable, so without this the binaries
+# exit silently (0xC0000135) unless LibTorch's lib directory is on PATH.
+option(MINK_COPY_TORCH_DLLS "Copy LibTorch DLLs next to the built executables (Windows)" ON)
+if(WIN32 AND MINK_COPY_TORCH_DLLS AND TORCH_INSTALL_PREFIX)
+    file(GLOB MINK_TORCH_RUNTIME_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
+    if(MINK_TORCH_RUNTIME_DLLS)
+        add_custom_target(mink_copy_torch_dlls ALL
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${MINK_TORCH_RUNTIME_DLLS} "${CMAKE_BINARY_DIR}"
+            COMMENT "Copying LibTorch DLLs to ${CMAKE_BINARY_DIR}"
+            COMMAND_EXPAND_LISTS
+        )
+    endif()
 endif()
 
 # ============================================================
