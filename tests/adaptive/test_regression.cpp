@@ -2,7 +2,7 @@
 // once adaptive support is added.
 #include "MinkowskiEngine/adaptive/adaptive.hpp"
 #include "MinkowskiEngine/minkowski.hpp"
-#include "test_framework.hpp"
+#include "utils/test_framework.hpp"
 
 namespace {
 

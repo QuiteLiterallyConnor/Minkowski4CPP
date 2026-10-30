@@ -13,6 +13,10 @@ project(MinkowskiEngineCPP
 option(CPU_ONLY "Build without Minkowski CUDA kernels" OFF)
 option(MINK_BUILD_TESTS "Build test executables" ON)
 option(MINK_ENABLE_OPENMP "Enable OpenMP support" ON)
+option(MINKOWSKI_ENABLE_GAUSSIAN
+    "Enable native Gaussian representation support" ON)
+option(MINK_BUILD_GAUSSIAN_BENCHMARKS
+    "Build Gaussian tensor and optimization benchmarks" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -167,6 +171,13 @@ file(GLOB MINK_CPU_SOURCES CONFIGURE_DEPENDS
 list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*test.*")
 list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*example.*")
 
+if(MINKOWSKI_ENABLE_GAUSSIAN)
+    file(GLOB MINK_GAUSSIAN_CPU_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/gaussian/*.cpp"
+    )
+    list(APPEND MINK_CPU_SOURCES ${MINK_GAUSSIAN_CPU_SOURCES})
+endif()
+
 set(MINK_GPU_SOURCES)
 
 if(NOT CPU_ONLY)
@@ -183,6 +194,13 @@ if(NOT CPU_ONLY)
 
     list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*test.*")
     list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*example.*")
+
+    if(MINKOWSKI_ENABLE_GAUSSIAN)
+        file(GLOB MINK_GAUSSIAN_GPU_SOURCES CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/gaussian/*.cu"
+        )
+        list(APPEND MINK_GPU_SOURCES ${MINK_GAUSSIAN_GPU_SOURCES})
+    endif()
 
 endif()
 
@@ -248,6 +266,11 @@ if(CPU_ONLY)
 else()
     target_compile_definitions(minkowski_cpp
         PUBLIC USE_CUDA)
+endif()
+
+if(MINKOWSKI_ENABLE_GAUSSIAN)
+    target_compile_definitions(minkowski_cpp
+        PUBLIC MINKOWSKI_ENABLE_GAUSSIAN)
 endif()
 
 if(WIN32)
@@ -396,7 +419,11 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/bench_adaptive.cpp
     )
 
-    foreach(tgt adaptive_tests adaptive_bench)
+    add_executable(sphere
+        tests/sphere.cpp
+    )
+
+    foreach(tgt adaptive_tests adaptive_bench sphere)
         target_link_libraries(${tgt} PRIVATE minkowski_cpp)
         target_include_directories(${tgt} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -404,6 +431,7 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
             "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
             "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
             "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive"
         )
         if(MINK_TORCH_CXX_FLAGS)
@@ -416,6 +444,84 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
     enable_testing()
     add_test(NAME adaptive_tests COMMAND adaptive_tests)
 
+endif()
+
+# ============================================================
+# Gaussian tests
+# ============================================================
+
+if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
+    add_executable(gaussian_tests
+        tests/gaussian/main.cpp
+        tests/gaussian/test_gaussian3d.cpp
+        tests/gaussian/test_gaussian_tensor.cpp
+        tests/gaussian/test_gaussian_ply.cpp
+    )
+
+    target_compile_definitions(gaussian_tests PRIVATE
+        MINK_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    )
+    target_link_libraries(gaussian_tests PRIVATE minkowski_cpp)
+    target_include_directories(gaussian_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive"
+    )
+    if(MINK_TORCH_CXX_FLAGS)
+        target_compile_options(gaussian_tests PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+        )
+    endif()
+
+    # ============================================================
+    # Gaussian benchmarks
+    # ============================================================
+
+    if(MINK_BUILD_GAUSSIAN_BENCHMARKS AND MINKOWSKI_ENABLE_GAUSSIAN)
+        add_executable(gaussian_bench
+            benchmarks/gaussian_bench.cpp
+        )
+        target_link_libraries(gaussian_bench PRIVATE minkowski_cpp)
+        target_include_directories(gaussian_bench PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        )
+        target_compile_definitions(gaussian_bench PRIVATE
+            MINK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(gaussian_bench PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+    endif()
+
+    if(MINK_BUILD_GAUSSIAN_BENCHMARKS AND MINKOWSKI_ENABLE_GAUSSIAN)
+        add_executable(gaussian_ply_bench
+            benchmarks/gaussian_ply_bench.cpp
+        )
+        target_link_libraries(gaussian_ply_bench PRIVATE minkowski_cpp)
+        target_include_directories(gaussian_ply_bench PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        )
+        target_compile_definitions(gaussian_ply_bench PRIVATE
+            MINK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+            MINK_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(gaussian_ply_bench PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+    endif()
+
+    enable_testing()
+    add_test(NAME gaussian_tests COMMAND gaussian_tests)
 endif()
 
 # ============================================================
@@ -433,6 +539,7 @@ install(DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/minkowski"
     FILES_MATCHING
+        PATTERN "gaussian" EXCLUDE
         PATTERN "*.hpp"
         PATTERN "*.h"
         PATTERN "*.hh"
@@ -440,6 +547,21 @@ install(DIRECTORY
         PATTERN "*.inl"
         PATTERN "*.cuh"
 )
+
+if(MINKOWSKI_ENABLE_GAUSSIAN)
+    install(DIRECTORY
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/gaussian/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/minkowski/gaussian"
+        FILES_MATCHING
+            PATTERN "gaussian_cuda.hpp" EXCLUDE
+            PATTERN "*.hpp"
+            PATTERN "*.h"
+            PATTERN "*.hh"
+            PATTERN "*.hxx"
+            PATTERN "*.inl"
+            PATTERN "*.cuh"
+    )
+endif()
 
 # ============================================================
 # Package configuration
