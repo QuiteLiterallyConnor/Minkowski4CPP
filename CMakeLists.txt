@@ -24,6 +24,29 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 # ============================================================
+# Compiler cache (speeds up rebuilds after header/unrelated edits)
+# ============================================================
+
+option(MINK_USE_CCACHE "Use ccache/sccache when available" ON)
+
+if(MINK_USE_CCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_program(MINK_CCACHE_PROGRAM NAMES ccache sccache)
+    if(MINK_CCACHE_PROGRAM)
+        message(STATUS "Compiler cache: ${MINK_CCACHE_PROGRAM}")
+        set(CMAKE_C_COMPILER_LAUNCHER "${MINK_CCACHE_PROGRAM}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${MINK_CCACHE_PROGRAM}")
+        set(CMAKE_CUDA_COMPILER_LAUNCHER "${MINK_CCACHE_PROGRAM}")
+        if(MSVC)
+            # Caches cannot handle /Zi PDBs; embed debug info in objects.
+            if(POLICY CMP0141)
+                cmake_policy(SET CMP0141 NEW)
+                set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+            endif()
+        endif()
+    endif()
+endif()
+
+# ============================================================
 # CUDA configuration
 # ============================================================
 
@@ -154,6 +177,7 @@ if(NOT CPU_ONLY)
         "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/autograd/*.cu"
         "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/modules/*.cu"
         "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/utils/*.cu"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/adaptive/*.cu"
         "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/training/*.cu"
     )
 
@@ -365,6 +389,7 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_numerical.cpp
         tests/adaptive/test_gradients.cpp
         tests/adaptive/test_regression.cpp
+        tests/adaptive/test_sphere.cpp
     )
 
     add_executable(adaptive_bench

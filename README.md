@@ -12,6 +12,7 @@ Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine
 > - **Overview and API:** [Adaptive (mixed-resolution) voxelization](#adaptive-mixed-resolution-voxelization)
 > - **Usage examples:** [Adaptive examples](#adaptive-examples)
 > - **Measured benefit:** 41,376 adaptive voxels versus about 35 million for the equivalent uniform grid in the included benchmark.
+> - **Sphere volume accuracy benchmark:** [benchmarks/README.md](benchmarks/README.md) (standalone, links against an installed MinkowskiEngine package)
 
 ---
 
@@ -590,6 +591,10 @@ Tests: `adaptive_tests` (66 tests, CPU; CUDA agreement is checked when CUDA is a
 ```
 cmake --build build --target adaptive_tests adaptive_bench
 ```
+
+The standalone sphere benchmark compares uniform grids against an adaptive octree using
+volume error, voxel counts, boundary-cell counts, and construction/evaluation timings. See
+[benchmarks/README.md](benchmarks/README.md) for setup and run instructions.
 
 Measured with `adaptive_bench` (20k points, depth 4, CPU, Windows/CUDA 13.2 build): 41,376 adaptive
 voxels versus about 35 million for the equivalent uniform grid at the finest resolution;

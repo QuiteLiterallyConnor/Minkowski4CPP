@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -71,6 +73,22 @@ inline std::vector<int64_t> sorted_order(const std::vector<Key> &keys) {
   return order;
 }
 
+// Sorts `keys` by key_less. `order` receives the original position of each sorted key and
+// is left empty when the input was already sorted (nothing moved).
+void sort_keys(std::vector<Key> &keys, std::vector<int64_t> &order);
+
+#ifdef USE_CUDA
+// Device versions (adaptive_topology_cuda.cu) of sort_keys and the ancestor check.
+bool cuda_topology_available();
+void cuda_sort_keys(std::vector<Key> &keys, std::vector<int64_t> &order);
+bool cuda_has_active_ancestor(const std::vector<Key> &keys,
+                              const std::vector<int64_t> &level_begin, int64_t first);
+#endif
+
+// Calls f(begin, end) over disjoint blocks covering [0, n), on several threads for large n.
+// The first exception thrown by f is rethrown after all blocks finish.
+void parallel_blocks(int64_t n, const std::function<void(int64_t, int64_t)> &f);
+
 struct Topology {
   uint64_t id = 0;
   int D = 0;
@@ -79,14 +97,17 @@ struct Topology {
   DVec origin{};
   DVec base{};
   std::vector<Key> keys; // sorted by key_less, strictly increasing
-  std::unordered_map<Key, int64_t, KeyHash> index;
   at::Tensor coords;  // [N, D] int64
   at::Tensor levels;  // [N] int32
-  at::Tensor lo, hi;  // [N, D] double
-  at::Tensor sizes;   // [N, D] double
   at::Tensor volumes; // [N] double
   std::vector<int64_t> counts;
   std::vector<uint32_t> present_levels;
+
+  // Built on first use; most callers never need them.
+  const at::Tensor &lo_tensor() const { build_geometry(); return lo_; }
+  const at::Tensor &hi_tensor() const { build_geometry(); return hi_; }
+  const at::Tensor &sizes_tensor() const { build_geometry(); return sizes_; }
+  at::Tensor centers_tensor() const; // [N, D] double, a fresh tensor
 
   int64_t size() const { return static_cast<int64_t>(keys.size()); }
 
@@ -121,6 +142,7 @@ struct Topology {
   }
 
   int64_t find(const Key &k) const {
+    const auto &index = index_map();
     auto it = index.find(k);
     return it == index.end() ? -1 : it->second;
   }
@@ -139,6 +161,7 @@ struct Topology {
   }
 
   bool has_overlap() const {
+    const auto &index = index_map();
     for (const Key &k : keys)
       for (uint32_t l = 0; l < k.level; ++l)
         if (index.count(ancestor_at(k, l)))
@@ -208,6 +231,15 @@ struct Topology {
   // std::invalid_argument on duplicates, bad levels or overlapping leaves.
   static std::shared_ptr<const Topology> make(const AdaptiveVoxelConfig &cfg,
                                               std::vector<Key> sorted_keys);
+
+private:
+  const std::unordered_map<Key, int64_t, KeyHash> &index_map() const;
+  void build_geometry() const;
+
+  mutable std::once_flag index_once_;
+  mutable std::unordered_map<Key, int64_t, KeyHash> index_;
+  mutable std::once_flag geometry_once_;
+  mutable at::Tensor lo_, hi_, sizes_; // [N, D] double
 };
 
 inline bool same_topology(const Topology &a, const Topology &b) {

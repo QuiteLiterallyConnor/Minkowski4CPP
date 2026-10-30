@@ -28,3 +28,10 @@ ADD THIS TO THE INSTALL INSTRUCTIONS
 cuDNN 9.27.0 Downloads
 https://developer.nvidia.com/cudnn-downloads
 
+Adaptive	232	0.100 ms	0.012 ms	0.104 ms
+Uniform	110,592 (48³)	38.919 ms	4.362 ms	43.847 ms
+
+Voxels	Adaptive accuracy	Uniform accuracy
+125	97.358%	76.241%
+1,000	96.301%	94.576%
+19,683	99.553%	99.136%
