@@ -456,6 +456,7 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         tests/gaussian/test_gaussian3d.cpp
         tests/gaussian/test_gaussian_tensor.cpp
         tests/gaussian/test_gaussian_ply.cpp
+        tests/gaussian/test_gaussian_render.cpp
     )
 
     target_compile_definitions(gaussian_tests PRIVATE

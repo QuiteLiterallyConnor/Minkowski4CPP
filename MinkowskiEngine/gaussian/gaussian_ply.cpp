@@ -1,11 +1,12 @@
 #include "gaussian/gaussian_ply.hpp"
 
+#include "gaussian/gaussian_sh.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
-#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -14,7 +15,8 @@ namespace minkowski {
 namespace gaussian {
 namespace {
 
-constexpr float kSH_C0 = 0.28209479177387814f;
+constexpr float kSH_C0 = static_cast<float>(kShC0);
+constexpr float kProbabilityEpsilon = 1e-6f;
 
 struct Property {
   std::string name;
@@ -77,8 +79,8 @@ const Property &require(const Element &e, const std::string &name) {
 }
 
 void normalize_quaternion(float *q) {
-  const float n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] +
-                            q[3] * q[3]);
+  const float n =
+      std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
   if (n < 1e-12f) {
     q[0] = 1.f;
     q[1] = q[2] = q[3] = 0.f;
@@ -88,11 +90,50 @@ void normalize_quaternion(float *q) {
     q[i] /= n;
 }
 
-float sigmoid(float x) { return 1.f / (1.f + std::exp(-x)); }
+float logit(float p) {
+  p = std::min(std::max(p, kProbabilityEpsilon), 1.f - kProbabilityEpsilon);
+  return std::log(p / (1.f - p));
+}
 
-} // namespace
+// Number of f_rest_* properties -> SH degree, or -1 if the layout is unknown.
+int degree_from_rest_count(int64_t count) {
+  switch (count) {
+  case 0: return 0;
+  case 9: return 1;
+  case 24: return 2;
+  case 45: return 3;
+  default: return -1;
+  }
+}
 
-GaussianTensor load_gaussian_ply(const std::string &path) {
+int64_t count_rest_properties(const Element &e) {
+  int64_t count = 0;
+  while (e.find("f_rest_" + std::to_string(count)))
+    ++count;
+  return count;
+}
+
+// Compressed SH bytes: 0 -> -4, 255 -> 4, otherwise (v + 0.5) / 256 * 8 - 4.
+float decode_sh_byte(uint8_t v) {
+  const float t = v == 0 ? 0.f : (v == 255 ? 1.f : (v + 0.5f) / 256.f);
+  return t * 8.f - 4.f;
+}
+
+struct RawGaussians {
+  int64_t n = 0;
+  int degree = 0;
+  std::vector<float> pos, dc, opacity, scale, rot;
+  // File order per vertex: [3][K-1] (channel-major).
+  std::vector<float> rest;
+};
+
+at::Tensor make_tensor(std::vector<float> &v, at::IntArrayRef shape) {
+  return torch::from_blob(v.data(), shape,
+                          torch::TensorOptions().dtype(torch::kFloat32))
+      .clone();
+}
+
+GaussianModel read_ply(const std::string &path, bool load_sh) {
   std::ifstream file(path, std::ios::binary);
   if (!file)
     throw std::runtime_error("PLY: cannot open '" + path + "'");
@@ -144,37 +185,46 @@ GaussianTensor load_gaussian_ply(const std::string &path) {
   if (!binary_le)
     throw std::runtime_error("PLY: only binary_little_endian is supported");
 
-  const auto data_start = static_cast<size_t>(file.tellg());
-  size_t cursor = data_start;
+  size_t cursor = static_cast<size_t>(file.tellg());
   for (auto &e : elements) {
     e.byte_offset = cursor;
     cursor += e.stride * static_cast<size_t>(e.count);
   }
-
   file.seekg(0, std::ios::end);
-  const auto file_size = static_cast<size_t>(file.tellg());
-  if (file_size < cursor)
+  if (static_cast<size_t>(file.tellg()) < cursor)
     throw std::runtime_error("PLY: file is truncated");
+  file.clear();
 
-  const Element *vertex = nullptr, *chunk = nullptr;
+  const Element *vertex = nullptr, *chunk = nullptr, *sh = nullptr;
   for (const auto &e : elements) {
     if (e.name == "vertex")
       vertex = &e;
     else if (e.name == "chunk")
       chunk = &e;
+    else if (e.name == "sh")
+      sh = &e;
   }
   if (!vertex)
     throw std::runtime_error("PLY: no vertex element");
 
-  const int64_t n = vertex->count;
-  std::vector<char> vertex_bytes(vertex->stride * static_cast<size_t>(n));
-  file.seekg(static_cast<std::streamoff>(vertex->byte_offset));
-  file.read(vertex_bytes.data(),
-            static_cast<std::streamsize>(vertex_bytes.size()));
-  if (!file && !vertex_bytes.empty())
-    throw std::runtime_error("PLY: failed reading vertex data");
+  auto read_block = [&](const Element &e) {
+    std::vector<char> bytes(e.stride * static_cast<size_t>(e.count));
+    file.seekg(static_cast<std::streamoff>(e.byte_offset));
+    file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!file && !bytes.empty())
+      throw std::runtime_error("PLY: failed reading element '" + e.name + "'");
+    return bytes;
+  };
 
-  std::vector<float> pos(3 * n), rot(4 * n), scl(3 * n), opa(n), col(3 * n);
+  const int64_t n = vertex->count;
+  const std::vector<char> vertex_bytes = read_block(*vertex);
+  RawGaussians g;
+  g.n = n;
+  g.pos.resize(3 * n);
+  g.dc.resize(3 * n);
+  g.opacity.resize(n);
+  g.scale.resize(3 * n);
+  g.rot.resize(4 * n);
 
   if (vertex->find("packed_position")) {
     if (!chunk)
@@ -182,14 +232,7 @@ GaussianTensor load_gaussian_ply(const std::string &path) {
     const int64_t chunk_size = 256;
     if (chunk->count < (n + chunk_size - 1) / chunk_size)
       throw std::runtime_error("PLY: too few chunks for vertex count");
-    std::vector<char> chunk_bytes(chunk->stride *
-                                  static_cast<size_t>(chunk->count));
-    file.clear();
-    file.seekg(static_cast<std::streamoff>(chunk->byte_offset));
-    file.read(chunk_bytes.data(),
-              static_cast<std::streamsize>(chunk_bytes.size()));
-    if (!file)
-      throw std::runtime_error("PLY: failed reading chunk data");
+    const std::vector<char> chunk_bytes = read_block(*chunk);
 
     const char *names[18] = {"min_x",       "min_y",       "min_z",
                              "max_x",       "max_y",       "max_z",
@@ -213,9 +256,9 @@ GaussianTensor load_gaussian_ply(const std::string &path) {
         c[k] = read_float(ch, *cp[k]);
 
       const uint32_t p = read_at<uint32_t>(row, pp.offset);
-      pos[3 * i + 0] = lerp(c[0], c[3], ((p >> 21) & 2047u) / 2047.f);
-      pos[3 * i + 1] = lerp(c[1], c[4], ((p >> 11) & 1023u) / 1023.f);
-      pos[3 * i + 2] = lerp(c[2], c[5], (p & 2047u) / 2047.f);
+      g.pos[3 * i + 0] = lerp(c[0], c[3], ((p >> 21) & 2047u) / 2047.f);
+      g.pos[3 * i + 1] = lerp(c[1], c[4], ((p >> 11) & 1023u) / 1023.f);
+      g.pos[3 * i + 2] = lerp(c[2], c[5], (p & 2047u) / 2047.f);
 
       // 2-bit index of the omitted (largest) component, then three 10-bit
       // components scaled by sqrt(2).
@@ -233,21 +276,45 @@ GaussianTensor load_gaussian_ply(const std::string &path) {
       default: q[0] = a; q[1] = b; q[2] = d; q[3] = m; break;
       }
       normalize_quaternion(q);
-      std::copy(q, q + 4, &rot[4 * i]);
+      std::copy(q, q + 4, &g.rot[4 * i]);
 
+      // Chunk scale bounds are log-scales.
       const uint32_t s = read_at<uint32_t>(row, ps.offset);
-      scl[3 * i + 0] = std::exp(lerp(c[6], c[9], ((s >> 21) & 2047u) / 2047.f));
-      scl[3 * i + 1] = std::exp(lerp(c[7], c[10], ((s >> 11) & 1023u) / 1023.f));
-      scl[3 * i + 2] = std::exp(lerp(c[8], c[11], (s & 2047u) / 2047.f));
+      g.scale[3 * i + 0] = lerp(c[6], c[9], ((s >> 21) & 2047u) / 2047.f);
+      g.scale[3 * i + 1] = lerp(c[7], c[10], ((s >> 11) & 1023u) / 1023.f);
+      g.scale[3 * i + 2] = lerp(c[8], c[11], (s & 2047u) / 2047.f);
 
+      // Packed color is RGB in [min, max] and alpha (already activated).
       const uint32_t k = read_at<uint32_t>(row, pc.offset);
-      const float dc[3] = {
+      const float rgb[3] = {
           lerp(c[12], c[15], ((k >> 24) & 255u) / 255.f),
           lerp(c[13], c[16], ((k >> 16) & 255u) / 255.f),
           lerp(c[14], c[17], ((k >> 8) & 255u) / 255.f)};
       for (int j = 0; j < 3; ++j)
-        col[3 * i + j] = 0.5f + kSH_C0 * dc[j];
-      opa[i] = (k & 255u) / 255.f;
+        g.dc[3 * i + j] = (rgb[j] - 0.5f) / kSH_C0;
+      g.opacity[i] = logit((k & 255u) / 255.f);
+    }
+
+    if (load_sh && sh) {
+      const int64_t count = count_rest_properties(*sh);
+      g.degree = degree_from_rest_count(count);
+      if (g.degree < 0)
+        g.degree = 0;
+      else if (sh->count != n)
+        throw std::runtime_error("PLY: sh element count mismatch");
+      else if (count > 0) {
+        const std::vector<char> sh_bytes = read_block(*sh);
+        std::vector<size_t> offsets(static_cast<size_t>(count));
+        for (int64_t j = 0; j < count; ++j)
+          offsets[static_cast<size_t>(j)] =
+              require(*sh, "f_rest_" + std::to_string(j)).offset;
+        g.rest.resize(static_cast<size_t>(n * count));
+        for (int64_t i = 0; i < n; ++i)
+          for (int64_t j = 0; j < count; ++j)
+            g.rest[static_cast<size_t>(i * count + j)] = decode_sh_byte(
+                static_cast<uint8_t>(sh_bytes[sh->stride * i +
+                                              offsets[static_cast<size_t>(j)]]));
+      }
     }
   } else {
     const Property &px = require(*vertex, "x"), &py = require(*vertex, "y"),
@@ -262,31 +329,112 @@ GaussianTensor load_gaussian_ply(const std::string &path) {
                              &require(*vertex, "rot_3")};
     const Property *dc[3] = {vertex->find("f_dc_0"), vertex->find("f_dc_1"),
                              vertex->find("f_dc_2")};
+
+    int64_t rest_count = 0;
+    std::vector<const Property *> rest_props;
+    if (load_sh) {
+      rest_count = count_rest_properties(*vertex);
+      g.degree = degree_from_rest_count(rest_count);
+      if (g.degree < 0) {
+        g.degree = 0;
+        rest_count = 0;
+      }
+      for (int64_t j = 0; j < rest_count; ++j)
+        rest_props.push_back(&require(*vertex, "f_rest_" + std::to_string(j)));
+      g.rest.resize(static_cast<size_t>(n * rest_count));
+    }
+
     for (int64_t i = 0; i < n; ++i) {
       const char *row = vertex_bytes.data() + vertex->stride * i;
-      pos[3 * i + 0] = read_float(row, px);
-      pos[3 * i + 1] = read_float(row, py);
-      pos[3 * i + 2] = read_float(row, pz);
+      g.pos[3 * i + 0] = read_float(row, px);
+      g.pos[3 * i + 1] = read_float(row, py);
+      g.pos[3 * i + 2] = read_float(row, pz);
       for (int j = 0; j < 3; ++j) {
-        scl[3 * i + j] = std::exp(read_float(row, *sc[j]));
-        col[3 * i + j] =
-            dc[j] ? 0.5f + kSH_C0 * read_float(row, *dc[j]) : 0.5f;
+        g.scale[3 * i + j] = read_float(row, *sc[j]);
+        g.dc[3 * i + j] = dc[j] ? read_float(row, *dc[j]) : 0.f;
       }
       float q[4];
       for (int j = 0; j < 4; ++j)
         q[j] = read_float(row, *rt[j]);
       normalize_quaternion(q);
-      std::copy(q, q + 4, &rot[4 * i]);
-      opa[i] = sigmoid(read_float(row, po));
+      std::copy(q, q + 4, &g.rot[4 * i]);
+      g.opacity[i] = read_float(row, po);
+      for (int64_t j = 0; j < rest_count; ++j)
+        g.rest[static_cast<size_t>(i * rest_count + j)] =
+            read_float(row, *rest_props[static_cast<size_t>(j)]);
     }
   }
 
-  const auto opts = torch::TensorOptions().dtype(torch::kFloat32);
-  auto make = [&](std::vector<float> &v, int64_t cols) {
-    return torch::from_blob(v.data(), {n, cols}, opts).clone();
-  };
-  return GaussianTensor(make(pos, 3), make(rot, 4), make(scl, 3),
-                        make(opa, 1), make(col, 3));
+  const int64_t rest_per_channel = sh_coefficient_count(g.degree) - 1;
+  at::Tensor f_rest;
+  if (rest_per_channel == 0 || g.rest.empty()) {
+    f_rest = at::zeros({n, rest_per_channel, 3}, at::kFloat);
+  } else {
+    f_rest = make_tensor(g.rest, {n, 3, rest_per_channel})
+                 .transpose(1, 2)
+                 .contiguous();
+  }
+  return GaussianModel(make_tensor(g.pos, {n, 3}), make_tensor(g.dc, {n, 3}),
+                       f_rest, make_tensor(g.opacity, {n, 1}),
+                       make_tensor(g.scale, {n, 3}), make_tensor(g.rot, {n, 4}));
+}
+
+} // namespace
+
+GaussianTensor load_gaussian_ply(const std::string &path) {
+  return read_ply(path, /*load_sh=*/false).to_gaussian_tensor();
+}
+
+GaussianModel load_gaussian_model_ply(const std::string &path) {
+  return read_ply(path, /*load_sh=*/true);
+}
+
+void save_gaussian_ply(const GaussianModel &model, const std::string &path) {
+  const auto cpu = model.to(torch::kCPU);
+  const int64_t n = cpu.size();
+  const int64_t rest_per_channel = cpu.f_rest().size(1);
+  const int64_t rest_count = 3 * rest_per_channel;
+
+  std::ofstream file(path, std::ios::binary);
+  if (!file)
+    throw std::runtime_error("PLY: cannot write '" + path + "'");
+
+  std::ostringstream header;
+  header << "ply\nformat binary_little_endian 1.0\nelement vertex " << n
+         << "\n";
+  for (const char *name : {"x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1",
+                           "f_dc_2"})
+    header << "property float " << name << "\n";
+  for (int64_t i = 0; i < rest_count; ++i)
+    header << "property float f_rest_" << i << "\n";
+  for (const char *name : {"opacity", "scale_0", "scale_1", "scale_2", "rot_0",
+                           "rot_1", "rot_2", "rot_3"})
+    header << "property float " << name << "\n";
+  header << "end_header\n";
+  const std::string header_text = header.str();
+  file.write(header_text.data(), static_cast<std::streamsize>(header_text.size()));
+
+  const auto normals = at::zeros({n, 3}, at::kFloat);
+  const auto rest =
+      rest_count == 0
+          ? at::zeros({n, 0}, at::kFloat)
+          : cpu.f_rest().detach().transpose(1, 2).contiguous().reshape(
+                {n, rest_count});
+  const auto rows = at::cat({cpu.xyz().detach(), normals, cpu.f_dc().detach(),
+                             rest, cpu.opacity_raw().detach(),
+                             cpu.scale_raw().detach(),
+                             cpu.rotation_raw().detach()},
+                            1)
+                        .contiguous();
+  file.write(reinterpret_cast<const char *>(rows.data_ptr<float>()),
+             static_cast<std::streamsize>(rows.numel() * sizeof(float)));
+  if (!file)
+    throw std::runtime_error("PLY: failed writing '" + path + "'");
+}
+
+void save_gaussian_ply(const GaussianTensor &gaussians,
+                       const std::string &path) {
+  save_gaussian_ply(GaussianModel::from_tensor(gaussians), path);
 }
 
 } // namespace gaussian

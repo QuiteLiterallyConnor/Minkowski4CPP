@@ -1,5 +1,7 @@
 #include "gaussian/gaussian_optimizer.hpp"
 #include "gaussian/gaussian_ply.hpp"
+#include "gaussian/gaussian_render.hpp"
+#include "gaussian/gaussian_trainer.hpp"
 
 #include <torch/torch.h>
 #include <torch/version.h>
@@ -34,6 +36,12 @@
 using minkowski::gaussian::GaussianOptimizer;
 using minkowski::gaussian::GaussianTensor;
 using minkowski::gaussian::load_gaussian_ply;
+using minkowski::gaussian::Camera;
+using minkowski::gaussian::GaussianModel;
+using minkowski::gaussian::GaussianTrainer;
+using minkowski::gaussian::GaussianTrainerConfig;
+using minkowski::gaussian::load_gaussian_model_ply;
+using minkowski::gaussian::render;
 using Clock = std::chrono::steady_clock;
 
 namespace {
@@ -198,6 +206,66 @@ int main(int argc, char **argv) {
       run_ops(gpu, q.cuda(), t.cuda(), lo.cuda(), hi.cuda(), "cuda");
     }
 #endif
+
+    // Rendering and training use the raw-parameter model (with SH).
+    {
+      const auto model_stats = measure(
+          [&] { auto m = load_gaussian_model_ply(inputs[0]); }, false, 1,
+          std::max(1, iterations / 2));
+      rows.push_back({"load_model_with_sh", "cpu", model_stats});
+
+      auto full = load_gaussian_model_ply(inputs[0]);
+      const auto center = full.xyz().mean(0);
+      const double radius = full.xyz().std(0).max().item<double>() * 2.0;
+      auto make_camera = [&](int64_t size) {
+        return Camera::look_at({center[0].item<double>(),
+                                center[1].item<double>(),
+                                center[2].item<double>() - radius},
+                               {center[0].item<double>(),
+                                center[1].item<double>(),
+                                center[2].item<double>()},
+                               {0, -1, 0}, size, size, 1.0);
+      };
+
+      auto run_render = [&](GaussianModel model, int64_t size,
+                            const std::string &dev, int render_iters,
+                            bool cuda_kernels = true) {
+        const bool cuda = dev == "cuda";
+        const auto camera = make_camera(size);
+        const std::string tag = std::to_string(model.size()) + "g_" +
+                                std::to_string(size) + "px" +
+                                (cuda && !cuda_kernels ? "_torch" : "");
+        minkowski::gaussian::RenderOptions render_options;
+        render_options.use_cuda_kernels = cuda_kernels;
+        {
+          torch::NoGradGuard guard;
+          rows.push_back({"render_forward:" + tag, dev,
+                          measure([&] { render(model, camera, render_options); },
+                                  cuda, 1, render_iters)});
+        }
+        const auto target = at::full({size, size, 3}, 0.5f,
+                                     at::TensorOptions().device(model.device()));
+        GaussianTrainerConfig config;
+        config.densify = false;
+        config.scene_extent = radius;
+        config.render = render_options;
+        GaussianTrainer trainer(model, config);
+        rows.push_back({"train_step:" + tag, dev,
+                        measure([&] { trainer.step(camera, target); }, cuda, 1,
+                                render_iters)});
+      };
+
+      run_render(full.select(at::arange(5000, at::kLong)), 128, "cpu",
+                 std::max(2, iterations / 3));
+#ifdef USE_CUDA
+      if (at::cuda::is_available()) {
+        run_render(full.to(torch::Device(torch::kCUDA, 0)), 512, "cuda",
+                   std::max(3, iterations / 2));
+        run_render(full.to(torch::Device(torch::kCUDA, 0)), 512, "cuda",
+                   std::max(2, iterations / 5), false);
+      }
+#endif
+    }
 
     std::ostringstream js;
     js << std::fixed << std::setprecision(4);

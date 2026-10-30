@@ -44,6 +44,11 @@
 #include "gaussian/gaussian_tensor.hpp"
 #include "gaussian/gaussian_optimizer.hpp"
 #include "gaussian/gaussian_ply.hpp"
+#include "gaussian/gaussian_camera.hpp"
+#include "gaussian/gaussian_sh.hpp"
+#include "gaussian/gaussian_model.hpp"
+#include "gaussian/gaussian_render.hpp"
+#include "gaussian/gaussian_trainer.hpp"
 #endif
 
 namespace minkowski {

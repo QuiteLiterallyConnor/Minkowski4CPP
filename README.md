@@ -7,11 +7,11 @@
 Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine](https://github.com/NVIDIA/MinkowskiEngine) into native C++ workflows, with first-class CUDA acceleration on both major platforms, something the original Python-based library does not support.
 
 > ### Gaussian splats are built in
-> Minkowski4CPP includes an opt-in native **3D Gaussian** subsystem (`MinkowskiEngine/gaussian`). Load Gaussian-splat `.ply` files (standard 3DGS and SuperSplat/PlayCanvas compressed, detected automatically) into a batched, LibTorch-backed `GaussianTensor`, then compute covariances, filter by opacity or bounds, select, merge, apply rigid transforms, and optimize parameters with Adam. Works on CPU and CUDA (dedicated CUDA kernels for covariance and rigid transforms), and the transforms are differentiable.
+> Minkowski4CPP includes an opt-in native **3D Gaussian** subsystem (`MinkowskiEngine/gaussian`). Load Gaussian-splat `.ply` files (standard 3DGS and SuperSplat/PlayCanvas compressed, detected automatically) into a batched, LibTorch-backed `GaussianTensor`, then compute covariances, filter by opacity or bounds, select, merge, apply rigid transforms, and optimize parameters with Adam. It also **renders and trains**: a differentiable rasterizer (fused CUDA forward/backward kernels, with a LibTorch fallback on CPU), spherical harmonics up to degree 3, a 3DGS-style `GaussianTrainer` with densification, pruning and opacity reset, and PLY saving. Works on CPU and CUDA.
 >
 > - **Overview and API:** [Gaussian splats](#gaussian-splats)
-> - **Usage examples:** [Gaussian examples](#gaussian-examples)
-> - **Measured:** a 139K-Gaussian scene loads in about 17-37 ms and its covariances compute in about 0.3 ms on an RTX 3080 (see [Gaussian benchmarks](#gaussian-benchmarks)).
+> - **Usage examples:** [Gaussian examples](#gaussian-examples) and [rendering and training](#gaussian-rendering-and-training)
+> - **Measured:** a 139K-Gaussian scene loads in about 17-37 ms, its covariances compute in about 0.3 ms, and a 512x512 render takes about 6 ms (28 ms per train step) on an RTX 3080 (see [Gaussian benchmarks](#gaussian-benchmarks)).
 
 > ### Adaptive (mixed-resolution) voxelization is built in
 > Beyond the standard uniform sparse tensor, this library includes **adaptive resolution voxelization**: a single sparse tensor can hold voxels at **different resolutions** (octree-style, up to a configurable depth). Refine only the regions that matter, such as a region of interest or dense or high-variance areas, and keep the rest coarse. Convolution, pooling, interpolation and resampling all work across resolution boundaries, are differentiable, and run on CPU and CUDA. It is opt-in and leaves the uniform `SparseTensor` API unchanged.
@@ -626,11 +626,36 @@ Everything lives in `minkowski::gaussian`; include `MinkowskiEngine/minkowski.hp
 |---|---|
 | `Gaussian3D<T>` | Host value type: mean, orientation (w,x,y,z), scale, opacity; covariance, density, Mahalanobis distance, overlap integral, sampling, bounds. |
 | `GaussianTensor` | Batched storage: positions `[N,3]`, rotations `[N,4]`, scales `[N,3]`, opacities `[N,1]`, colors `[N,3]`, optional features and velocities. Float32/float64, CPU or CUDA. |
-| `load_gaussian_ply` | Loads binary little-endian PLY, either standard 3DGS (`x,y,z,f_dc_*,opacity,scale_*,rot_*`) or SuperSplat compressed. Applies sigmoid to opacity, exp to scales, `0.5 + C0*f_dc` to colors and normalizes quaternions. Spherical-harmonic rest coefficients are skipped. Throws `std::runtime_error` on missing or malformed files. |
+| `load_gaussian_ply` | Loads binary little-endian PLY, either standard 3DGS (`x,y,z,f_dc_*,opacity,scale_*,rot_*`) or SuperSplat compressed. Applies sigmoid to opacity, exp to scales, `0.5 + C0*f_dc` to colors and normalizes quaternions. Spherical-harmonic rest coefficients are skipped by `load_gaussian_ply`; use `load_gaussian_model_ply` to keep them. Throws `std::runtime_error` on missing or malformed files. |
 | `GaussianOptimizer` | LibTorch Adam over the Gaussian fields, with RGB/depth reconstruction losses, opacity and scale regularizers, and constraint projection (scale and opacity clamps). |
 | CUDA kernels | Used for covariance and rigid transforms on CUDA tensors when no gradients are required. |
+| `GaussianModel` | Trainable raw parameters (xyz, `f_dc`, `f_rest`, logit opacity, log scale, quaternion) with activated views, SH degree 0-3, `from_points`, `select`, `clone`, `to`. |
+| `render` / `render_gaussians` | Differentiable tile-based rasterizer (EWA projection, depth sort, front-to-back alpha compositing) returning image, depth, alpha, screen-space means and radii. Gradients reach every parameter. On CUDA tensors it uses fused forward and backward CUDA kernels (16x16 tiles, shared-memory batching, warp-reduced gradient accumulation); `RenderOptions::use_cuda_kernels = false` falls back to the pure LibTorch path, which is also used on CPU. |
+| `GaussianTrainer` | 3DGS-style training: L1 + SSIM loss, per-parameter Adam, position LR decay, SH degree growth, gradient-driven densification (clone/split), pruning and periodic opacity reset. |
+| `save_gaussian_ply` / `load_gaussian_model_ply` | Write and read standard 3DGS PLYs including SH (round-trips raw parameters). |
 
-Not implemented yet: projection, splatting/rasterization, voxel bridges and adaptive indexing. See the [Gaussian notes](MinkowskiEngine/gaussian/README.md).
+Not implemented yet: voxel bridges and adaptive indexing. Projection and SH evaluation still run as LibTorch ops (differentiated by autograd); only tile compositing is fused. The SH decode of compressed PLYs follows the SuperSplat layout from memory and has not been verified against reference output. See the [Gaussian notes](MinkowskiEngine/gaussian/README.md).
+
+### Gaussian rendering and training
+
+Train a PLY (a camera needs a `[4,4]` float world-to-camera matrix in the OpenCV convention):
+
+```cpp
+GaussianModel model = load_gaussian_model_ply("scene.ply").to(torch::Device(torch::kCUDA, 0));
+
+Camera camera = Camera::look_at({0, 0, -4}, {0, 0, 0}, {0, -1, 0}, 512, 512, /*fov_x=*/1.0);
+at::Tensor image = render(model, camera).image;                  // [H,W,3]
+
+GaussianTrainerConfig config;
+config.scene_extent = 4.0;                                       // scales position LR and size thresholds
+GaussianTrainer trainer(model, config);
+for (const auto &[camera, target] : views)                        // target: [H,W,3] float in [0,1]
+  trainer.step(camera, target);                                  // loss, backward, Adam, densify/prune
+
+save_gaussian_ply(model, "trained.ply");
+```
+
+Initialize from a point cloud with `GaussianModel::from_points(points, colors)`.
 
 ### Gaussian examples
 
@@ -700,7 +725,7 @@ cmake --build build --target gaussian_tests
 build\gaussian_tests.exe
 ```
 
-`gaussian_tests` (20 tests) covers the value math, tensor operations, optimizer, CUDA parity and PLY loading. `tests/gaussian/test_gaussian_ply.cpp` loads `tests/data/test.ply` (uncompressed) and `tests/data/test_compressed.ply`; set the `MINK_TEST_DATA_DIR` environment variable to use another data directory. Tests skip if the files are missing.
+`gaussian_tests` (35 tests) covers the value math, tensor operations, optimizer, CUDA parity, PLY loading/saving, SH, the differentiable renderer (including a finite-difference gradient check) and the trainer. `tests/gaussian/test_gaussian_ply.cpp` loads `tests/data/test.ply` (uncompressed) and `tests/data/test_compressed.ply`; set the `MINK_TEST_DATA_DIR` environment variable to use another data directory. Tests skip if the files are missing.
 
 ### Gaussian benchmarks
 
@@ -710,7 +735,7 @@ build\gaussian_bench.exe --count 100000 --output benchmarks\gaussian_benchmark_r
 build\gaussian_ply_bench.exe --input tests\data\test.ply --input tests\data\test_compressed.ply --iterations 10
 ```
 
-`gaussian_bench` times covariance, transform and optimization on synthetic data (CPU and CUDA). `gaussian_ply_bench` times cold and warm PLY loading (file size, Gaussians/s, MB/s) and then covariance, transforms, filters, an optimizer step and host-to-device transfer on the first input. Both write JSON. Measured on an RTX 3080 build with the 139,410-Gaussian scene: warm load about 37 ms (uncompressed, 32.9 MB) and 17 ms (compressed, 8.5 MB); covariances 7.8 ms on CPU versus 0.3 ms on CUDA. Disable with `-DMINK_BUILD_GAUSSIAN_BENCHMARKS=OFF`.
+`gaussian_bench` times covariance, transform and optimization on synthetic data (CPU and CUDA). `gaussian_ply_bench` times cold and warm PLY loading (file size, Gaussians/s, MB/s) and then covariance, transforms, filters, an optimizer step and host-to-device transfer on the first input. Both write JSON. Measured on an RTX 3080 build with the 139,410-Gaussian scene: warm load about 37 ms (uncompressed, 32.9 MB) and 17 ms (compressed, 8.5 MB); covariances 7.8 ms on CPU versus 0.3 ms on CUDA. Disable with `-DMINK_BUILD_GAUSSIAN_BENCHMARKS=OFF`. `gaussian_ply_bench` also times model loading with SH, forward rendering and a full training step: on the RTX 3080 the full 139,410-Gaussian scene at 512x512 takes about 6 ms per render and 28 ms per train step with the CUDA rasterizer (versus 772 ms and 3.2 s on the LibTorch fallback, about 128x and 113x slower); 5,000 Gaussians at 128x128 on CPU take about 48 ms and 197 ms.
 
 ---
 
