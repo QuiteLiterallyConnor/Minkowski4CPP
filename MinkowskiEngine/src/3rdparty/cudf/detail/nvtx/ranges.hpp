@@ -36,7 +36,11 @@ struct thread_range {
 
 #else
 
+#if __has_include(<nvtx3/nvtx3.hpp>)
+#include <nvtx3/nvtx3.hpp>
+#else
 #include "nvtx3.hpp"
+#endif
 
 namespace cudf {
 /**
@@ -51,7 +55,11 @@ struct libcudf_domain {
  * @brief Alias for an NVTX range in the libcudf domain.
  *
  */
+#if __has_include(<nvtx3/nvtx3.hpp>)
+using thread_range = ::nvtx3::scoped_range_in<libcudf_domain>;
+#else
 using thread_range = ::nvtx3::domain_thread_range<libcudf_domain>;
+#endif
 
 }  // namespace cudf
 

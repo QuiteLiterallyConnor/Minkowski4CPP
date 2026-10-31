@@ -10,17 +10,26 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda: ['124', '132', '134']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+      - name: Test builder scripts
+        run: bash tests/builders/test-builders.sh
+
+      - name: Test PowerShell builders
+        shell: pwsh
+        run: ./tests/builders/test-builders.ps1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
       - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -31,8 +40,19 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
+          # The pinned LibTorch archives and CMake download are x86_64.
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            CUDA_VERSION=${{ matrix.cuda }}
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/minkowskiengine:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/minkowskiengine:${{ github.ref_name }}
+            ${{ secrets.DOCKERHUB_USERNAME || 'minkowski4cpp' }}/minkowskiengine:cu${{ matrix.cuda }}
+            ${{ secrets.DOCKERHUB_USERNAME || 'minkowski4cpp' }}/minkowskiengine:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}-cu${{ matrix.cuda }}
+
+      - name: Publish default CUDA tags
+        if: github.event_name != 'pull_request' && matrix.cuda == '134'
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ secrets.DOCKERHUB_USERNAME }}/minkowskiengine:latest" \
+            --tag "${{ secrets.DOCKERHUB_USERNAME }}/minkowskiengine:${{ github.ref_name }}" \
+            "${{ secrets.DOCKERHUB_USERNAME }}/minkowskiengine:${{ github.ref_name }}-cu134"

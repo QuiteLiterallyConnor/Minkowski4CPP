@@ -2,7 +2,7 @@
 # MinkowskiEngine C++ — Debian Package Builder (Windows host)
 # =============================================================================
 #
-# Builds a .deb package for Ubuntu 22.04 + CUDA 12.4 by spinning up a
+# Builds a .deb package for the selected CUDA/Ubuntu profile by spinning up a
 # Docker build and exporting the finished package to the local machine.
 #
 # Prerequisites
@@ -24,13 +24,19 @@ param(
     [string]$Version = "1.3.0",
 
     # Parallel compile jobs passed to ninja inside the container.
+    [ValidateRange(1, 1024)]
     [int]$Jobs = 4,
+
+    [ValidateSet("124", "132", "134")]
+    [string]$CudaVersion = "134",
+
+    [string]$CudaArchitectures = "86",
 
     # Where to write the finished .deb.  Defaults to the apt\ directory.
     [string]$OutputDir = "",
 
     # Docker image tag used for the build cache; does not appear in the output.
-    [string]$ImageTag = "minkowski4cpp-deb-builder:latest",
+    [string]$ImageTag = "",
 
     # Keep the intermediate Docker image after the build completes.
     # By default the image is removed to save disk space.
@@ -56,7 +62,8 @@ if (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
 }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-$ExpectedDeb = Join-Path $OutputDir "libminkowski-cpp-dev_${Version}_amd64.deb"
+if (-not $ImageTag) { $ImageTag = "minkowski4cpp-deb-builder:cu$CudaVersion" }
+$ExpectedDeb = Join-Path $OutputDir "libminkowski-cpp-dev_${Version}_cu${CudaVersion}_amd64.deb"
 
 # ---------------------------------------------------------------------------
 # Banner
@@ -68,6 +75,7 @@ Write-Host " MinkowskiEngine C++ - Debian Package Builder" -ForegroundColor Cyan
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host "  Version      : $Version"
 Write-Host "  Jobs         : $Jobs"
+Write-Host "  CUDA         : cu$CudaVersion"
 Write-Host "  Project root : $ProjectRoot"
 Write-Host "  Dockerfile   : $Dockerfile"
 Write-Host "  Output dir   : $OutputDir"
@@ -122,8 +130,11 @@ $env:DOCKER_BUILDKIT = "1"
 $buildArgs = @(
     "build",
     "--file", $Dockerfile,
+    "--platform", "linux/amd64",
     "--build-arg", "VERSION=$Version",
     "--build-arg", "JOBS=$Jobs",
+    "--build-arg", "CUDA_VERSION=$CudaVersion",
+    "--build-arg", "CUDA_ARCHITECTURES=$CudaArchitectures",
     "--target", "artifact",
     "--output", "type=local,dest=$OutputDir",
     "--tag", $ImageTag,
@@ -147,16 +158,8 @@ Write-Host ""
 Write-Host "[3/3] Verifying output..." -ForegroundColor Cyan
 
 if (-not (Test-Path $ExpectedDeb)) {
-    # Docker may have written the file with a slightly different path; search
-    $found = Get-ChildItem -Path $OutputDir -Filter "libminkowski-cpp-dev_*.deb" -File |
-             Select-Object -First 1
-    if ($found) {
-        $ExpectedDeb = $found.FullName
-    } else {
-        Write-Host "ERROR: .deb not found in output directory: $OutputDir" -ForegroundColor Red
-        Write-Host "Check the Docker build log above for errors." -ForegroundColor Yellow
-        exit 1
-    }
+    Write-Host "ERROR: Expected .deb not found: $ExpectedDeb" -ForegroundColor Red
+    exit 1
 }
 
 $sizeMb = [math]::Round((Get-Item $ExpectedDeb).Length / 1MB, 2)
@@ -168,7 +171,7 @@ Write-Host "  Package : $(Split-Path -Leaf $ExpectedDeb)"
 Write-Host "  Size    : $sizeMb MB"
 Write-Host "  Path    : $ExpectedDeb"
 Write-Host ""
-Write-Host "  To install on a target Ubuntu 22.04 machine:" -ForegroundColor DarkGray
+Write-Host "  To install on a target machine with matching Ubuntu, CUDA and LibTorch:" -ForegroundColor DarkGray
 Write-Host "    sudo dpkg -i $(Split-Path -Leaf $ExpectedDeb)" -ForegroundColor DarkGray
 Write-Host "    sudo ldconfig" -ForegroundColor DarkGray
 Write-Host "================================================================" -ForegroundColor Green

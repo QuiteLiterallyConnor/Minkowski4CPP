@@ -11,3 +11,4 @@ debian
 CMakeCache.txt
 CMakeFiles/
 build.ninja
+dist/

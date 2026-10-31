@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page.title | escape }} | {{ site.title | escape }}</title>
+  <meta name="description" content="{{ page.description | default: site.description | escape }}">
+  <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="brand" href="{{ '/' | relative_url }}">{{ site.title | escape }} <span>Documentation</span></a>
+    <a href="{{ site.repository_url }}">GitHub repository</a>
+  </header>
+  <div class="site-body">
+    <nav class="sidebar" aria-label="Documentation">
+      <details open>
+        <summary>Guides & reference</summary>
+        <ul>
+          {% for item in site.data.navigation %}
+          <li><a href="{{ item.url | relative_url }}"{% if page.url == item.url %} aria-current="page"{% endif %}>{{ item.title | escape }}</a></li>
+          {% endfor %}
+        </ul>
+      </details>
+    </nav>
+    <main id="main" tabindex="-1">
+      <article>
+        <h1>{{ page.title | escape }}</h1>
+        {% if page.description %}<p class="lead">{{ page.description | escape }}</p>{% endif %}
+        {{ content }}
+      </article>
+      <footer>
+        <p><a href="{{ site.repository_url }}/edit/main/docs/{{ page.path }}">Improve this page</a>
+          &middot; <a href="{{ site.repository_url }}/issues">Report an issue</a></p>
+        <p>Minkowski4CPP is a derivative of NVIDIA's MinkowskiEngine. Preserve upstream and third-party license notices.</p>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

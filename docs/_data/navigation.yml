@@ -1,0 +1,24 @@
+- title: Overview
+  url: /
+- title: Installation
+  url: /installation/
+- title: Docker & Debian packages
+  url: /builders/
+- title: Quick start
+  url: /quickstart/
+- title: Sparse tensors & networks
+  url: /sparse-tensors/
+- title: Adaptive voxelization
+  url: /adaptive/
+- title: Gaussian splats
+  url: /gaussian/
+- title: Rendering & training
+  url: /rendering/
+- title: API reference
+  url: /api/
+- title: Tests & benchmarks
+  url: /testing/
+- title: Troubleshooting
+  url: /troubleshooting/
+- title: Contributing & credits
+  url: /contributing/

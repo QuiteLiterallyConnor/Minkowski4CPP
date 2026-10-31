@@ -2,30 +2,40 @@
 # MinkowskiEngine C++ — Debian Package Builder
 # =============================================================================
 #
-# Builds libminkowski-cpp-dev_<VERSION>_amd64.deb inside a Ubuntu 22.04 +
-# CUDA 12.4 environment, then drops the finished .deb at /output/ so the
+# Builds libminkowski-cpp-dev_<VERSION>_cu<PROFILE>_amd64.deb inside the
+# selected Ubuntu/CUDA environment, then drops the finished .deb at /output/ so the
 # host script can copy it out.
 #
 # Build args
 # ----------
-#   VERSION     Semver string embedded in the package (default: 1.0.0)
+#   VERSION     Semver string embedded in the package (default: 1.3.0)
 #   JOBS        Parallel ninja jobs (default: 4)
+#   CUDA_VERSION  124, 132, or 134 (default: 134)
+#   CUDA_ARCHITECTURES  CMake GPU architectures (default: 86)
 #
 # =============================================================================
 
 ARG VERSION=1.3.0
 ARG JOBS=4
+ARG CUDA_VERSION=134
+
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS cuda-124
+FROM nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04 AS cuda-132
+FROM nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04 AS cuda-134
 
 # ---------------------------------------------------------------------------
 # Stage 1 – builder
 # ---------------------------------------------------------------------------
-FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS builder
+FROM cuda-${CUDA_VERSION} AS builder
 
 # Re-declare ARGs inside each stage so they are accessible in RUN commands.
 # Promote VERSION to ENV so it can be referenced in later ENV and RUN lines.
 ARG VERSION
 ARG JOBS
+ARG CUDA_VERSION
+ARG CUDA_ARCHITECTURES=86
 ENV VERSION=${VERSION}
+ENV CUDA_VERSION=${CUDA_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -39,24 +49,25 @@ RUN apt-get update && apt-get install -y \
     dpkg-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Ubuntu 22.04 ships CMake 3.22; the project requires 3.24+.
-ARG CMAKE_VERSION=3.28.6
-RUN wget -q "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+# CUDA 13 needs modern CMake; Torch 2.5.1 still needs legacy NvToolsExt targets.
+ARG CMAKE_VERSION
+COPY docker/cuda-profile.sh /opt/cuda-profile.sh
+RUN bash -c 'source /opt/cuda-profile.sh && \
+    wget -q "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
          -O /tmp/cmake.tar.gz && \
     tar -xzf /tmp/cmake.tar.gz -C /opt && \
     ln -sf /opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/* /usr/local/bin/ && \
     rm /tmp/cmake.tar.gz && \
-    cmake --version
+    cmake --version'
 
 # CUDA environment
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:/opt/libtorch/lib:${LD_LIBRARY_PATH}
 
-# Download LibTorch (CUDA 12.4, CXX11 ABI)
-RUN cd /opt && \
-    wget -q "https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.5.1%2Bcu124.zip" \
-         -O libtorch.zip && \
+# The Linux CUDA 13 archives use the CXX11 ABI without the old filename prefix.
+RUN bash -c 'source /opt/cuda-profile.sh && wget -q "${LIBTORCH_URL}" -O /opt/libtorch.zip' && \
+    cd /opt && \
     unzip -q libtorch.zip && \
     rm libtorch.zip
 
@@ -65,11 +76,14 @@ WORKDIR /src
 COPY . .
 
 # Configure & build
-RUN cmake -B build -G Ninja \
+RUN bash -c 'source /opt/cuda-profile.sh && \
+    cmake -B build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_PREFIX_PATH=/opt/libtorch \
       -DCMAKE_INSTALL_PREFIX=/usr/local \
-    && cmake --build build --parallel ${JOBS}
+      -DCMAKE_INSTALL_LIBDIR=lib \
+      -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
+    && cmake --build build --parallel ${JOBS}'
 
 # ---------------------------------------------------------------------------
 # Stage 2 – package
@@ -108,6 +122,7 @@ Depends: libgomp1, libstdc++6
 Recommends: nvidia-cuda-toolkit
 Maintainer: Minkowski4CPP <https://github.com/acaicia/minkowski4cpp>
 Description: MinkowskiEngine C++ development library
+ Built for CUDA cu${CUDA_VERSION}.
  A C++ port of NVIDIA's MinkowskiEngine providing sparse tensor operations
  with full CUDA acceleration.  Installs the static library, public headers,
  and CMake package config files so that downstream projects can consume the
@@ -132,7 +147,7 @@ RUN find ${DEB_ROOT} -type d -exec chmod 755 {} \; && \
 # Build the .deb
 RUN mkdir -p /output && \
     dpkg-deb --build --root-owner-group ${DEB_ROOT} \
-        /output/${PKG_NAME}_${VERSION}_amd64.deb
+        /output/${PKG_NAME}_${VERSION}_cu${CUDA_VERSION}_amd64.deb
 
 # ---------------------------------------------------------------------------
 # Final stage — tiny image that holds only the .deb

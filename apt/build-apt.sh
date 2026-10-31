@@ -3,15 +3,15 @@
 # MinkowskiEngine C++ — Debian Package Builder (native Linux)
 # =============================================================================
 #
-# Builds libminkowski-cpp-dev_<VERSION>_amd64.deb directly on a Linux host
+# Builds libminkowski-cpp-dev_<VERSION>_cu<PROFILE>_amd64.deb on a Linux host
 # without Docker.  Requires a working CUDA toolkit, CMake, Ninja, and a
 # LibTorch installation.
 #
 # Prerequisites
 # -------------
 #   - CUDA Toolkit 12.4+ (nvcc on PATH)
-#   - LibTorch 2.5.1 (CXX11 ABI, CUDA 12.4)
-#   - cmake >= 3.18, ninja-build, build-essential, libomp-dev, dpkg-dev
+#   - Matching Linux LibTorch (CXX11 ABI): 2.5.1/cu124 or 2.15.0/cu132/cu134
+#   - cmake >= 3.24 (4.2.3 recommended for CUDA 13), Ninja, build-essential, dpkg-dev
 #
 # Usage
 # -----
@@ -25,6 +25,8 @@
 #   --build-dir PATH    CMake build directory     (default: <project>/build-deb)
 #   --output    PATH    Directory for .deb output (default: <script dir>)
 #   --keep-build        Keep the CMake build tree after packaging
+#   --cuda-version N   Require toolkit profile 124, 132, or 134 (default: detect)
+#   --cuda-architectures LIST  CMake GPU architectures (default: 86)
 #
 # =============================================================================
 
@@ -41,6 +43,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR=""
 OUTPUT_DIR="${SCRIPT_DIR}"
 KEEP_BUILD=0
+CUDA_VERSION=""
+CUDA_ARCHITECTURES=86
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -53,6 +57,8 @@ while [[ $# -gt 0 ]]; do
         --build-dir)  BUILD_DIR="$2";     shift 2 ;;
         --output)     OUTPUT_DIR="$2";    shift 2 ;;
         --keep-build) KEEP_BUILD=1;       shift   ;;
+        --cuda-version) CUDA_VERSION="$2"; shift 2 ;;
+        --cuda-architectures) CUDA_ARCHITECTURES="$2"; shift 2 ;;
         -h|--help)
             sed -n '/^# Usage/,/^# ====/p' "$0" | grep -v '^# ====' | sed 's/^# \?//'
             exit 0
@@ -71,12 +77,41 @@ if [[ -z "${LIBTORCH_PATH}" ]]; then
     exit 1
 fi
 
+if [[ -n "${CUDA_VERSION}" && ! "${CUDA_VERSION}" =~ ^(124|132|134)$ ]]; then
+    echo "ERROR: --cuda-version must be 124, 132, or 134." >&2
+    exit 1
+fi
+
+if command -v nvcc &>/dev/null; then
+    NVCC="$(readlink -f "$(command -v nvcc)")"
+    TOOLKIT_VERSION="$("${NVCC}" --version | sed -n 's/.*release \([0-9]*\)\.\([0-9]*\),.*/\1\2/p')"
+    if [[ -z "${TOOLKIT_VERSION}" ]]; then
+        echo "ERROR: Could not detect the CUDA toolkit version from ${NVCC}." >&2
+        exit 1
+    fi
+    if [[ -n "${CUDA_VERSION}" && "${CUDA_VERSION}" != "${TOOLKIT_VERSION}" ]]; then
+        echo "ERROR: Requested CUDA cu${CUDA_VERSION}, but nvcc provides cu${TOOLKIT_VERSION}." >&2
+        exit 1
+    fi
+    CUDA_VERSION="${TOOLKIT_VERSION}"
+    source "${PROJECT_ROOT}/docker/cuda-profile.sh"
+    BUILD_VARIANT="cu${CUDA_VERSION}"
+    CPU_ONLY=OFF
+else
+    if [[ -n "${CUDA_VERSION}" ]]; then
+        echo "ERROR: --cuda-version requires nvcc on PATH." >&2
+        exit 1
+    fi
+    BUILD_VARIANT=cpu
+    CPU_ONLY=ON
+fi
+
 if [[ -z "${BUILD_DIR}" ]]; then
-    BUILD_DIR="${PROJECT_ROOT}/build-deb"
+    BUILD_DIR="${PROJECT_ROOT}/build-deb-${BUILD_VARIANT}"
 fi
 
 PKG_NAME="libminkowski-cpp-dev"
-DEB_FILENAME="${PKG_NAME}_${VERSION}_amd64.deb"
+DEB_FILENAME="${PKG_NAME}_${VERSION}_${BUILD_VARIANT}_amd64.deb"
 STAGE_DIR="$(mktemp -d /tmp/minkowski-deb-XXXXXX)"
 DEB_ROOT="${STAGE_DIR}/${PKG_NAME}_${VERSION}_amd64"
 
@@ -99,6 +134,7 @@ info " MinkowskiEngine C++ - Debian Package Builder (native Linux)"
 info "================================================================"
 echo "  Version      : ${VERSION}"
 echo "  Jobs         : ${JOBS}"
+echo "  Build variant: ${BUILD_VARIANT}"
 echo "  Project root : ${PROJECT_ROOT}"
 echo "  LibTorch     : ${LIBTORCH_PATH}"
 echo "  Build dir    : ${BUILD_DIR}"
@@ -130,13 +166,11 @@ if [[ ! -d "${LIBTORCH_PATH}" ]]; then
 fi
 ok "LibTorch found at ${LIBTORCH_PATH}"
 
-if ! nvcc --version &>/dev/null; then
+if [[ "${CPU_ONLY}" == ON ]]; then
     warn "nvcc not on PATH — building without CUDA (CPU_ONLY=ON)."
     warn "Add CUDA bin dir to PATH for a CUDA-enabled build."
-    CPU_ONLY=ON
 else
-    ok "nvcc OK ($(nvcc --version | grep 'release' | awk '{print $6}'))"
-    CPU_ONLY=OFF
+    ok "nvcc OK (${CUDA_RELEASE}); use LibTorch ${TORCH_VERSION}/cu${CUDA_VERSION}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -151,12 +185,18 @@ CMAKE_ARGS=(
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_PREFIX_PATH="${LIBTORCH_PATH}"
     -DCMAKE_INSTALL_PREFIX="${DEB_ROOT}/usr/local"
+    -DCMAKE_INSTALL_LIBDIR=lib
+    -DCPU_ONLY="${CPU_ONLY}"
 )
-if [[ "${CPU_ONLY}" == "ON" ]]; then
-    CMAKE_ARGS+=(-DCPU_ONLY=ON)
+if [[ "${CPU_ONLY}" == OFF ]]; then
+    CMAKE_ARGS+=(
+        -DCMAKE_CUDA_COMPILER="${NVCC}"
+        -DCUDAToolkit_ROOT="$(dirname "$(dirname "${NVCC}")")"
+        -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}"
+    )
 fi
 
-cmake "${CMAKE_ARGS[@]}" "${PROJECT_ROOT}"
+cmake -S "${PROJECT_ROOT}" "${CMAKE_ARGS[@]}"
 cmake --build "${BUILD_DIR}" --parallel "${JOBS}"
 
 ok "Build complete."
@@ -176,10 +216,10 @@ if [[ -f "${ARCHIVE}" ]]; then
     info "  Flattening static archive..."
     ld -r --whole-archive "${ARCHIVE}" \
           --no-whole-archive \
-          -o /tmp/mink_merged.o
+          -o "${STAGE_DIR}/mink_merged.o"
     rm "${ARCHIVE}"
-    ar rcs "${ARCHIVE}" /tmp/mink_merged.o
-    rm /tmp/mink_merged.o
+    ar rcs "${ARCHIVE}" "${STAGE_DIR}/mink_merged.o"
+    rm "${STAGE_DIR}/mink_merged.o"
     ok "Archive flattened."
 fi
 
@@ -204,6 +244,7 @@ Depends: libgomp1, libstdc++6
 Recommends: nvidia-cuda-toolkit
 Maintainer: Minkowski4CPP <https://github.com/acaicia/minkowski4cpp>
 Description: MinkowskiEngine C++ development library
+ Build variant: ${BUILD_VARIANT}.
  A C++ port of NVIDIA's MinkowskiEngine providing sparse tensor operations
  with full CUDA acceleration.  Installs the static library, public headers,
  and CMake package config files so that downstream projects can consume the

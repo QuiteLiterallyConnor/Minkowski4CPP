@@ -1,6 +1,17 @@
 # apt — Debian Package Builder
 
-Produces `libminkowski-cpp-dev_<VERSION>_amd64.deb` for **Ubuntu 22.04 + CUDA 12.4**.  Two build paths are provided:
+Produces `libminkowski-cpp-dev_<VERSION>_cu<PROFILE>_amd64.deb`.
+The Docker path defaults to **CUDA 13.4**, with selectable modern and legacy profiles:
+
+| Profile | CUDA toolkit | Ubuntu | LibTorch (CXX11 ABI) |
+|---|---|---|---|
+| `134` (default) | 13.4.3 + cuDNN | 24.04 | 2.15.0 / cu134 |
+| `132` | 13.2.1 + cuDNN | 24.04 | 2.15.0 / cu132 |
+| `124` (legacy) | 12.4.0 | 22.04 | 2.5.1 / cu124 |
+
+CUDA-specific filenames prevent one profile from overwriting another.
+Packages retain the same Debian package name and cannot be co-installed.
+Two build paths are provided:
 
 | Script | Host | Requires |
 |---|---|---|
@@ -14,7 +25,7 @@ Produces `libminkowski-cpp-dev_<VERSION>_amd64.deb` for **Ubuntu 22.04 + CUDA 12
 ### Windows (`build-apt.ps1`)
 
 - Docker Desktop with Linux containers mode enabled (BuildKit on by default since v23)
-- ~20 GB free disk space (CUDA base image ~6 GB, LibTorch download ~2 GB)
+- At least 30 GB free disk space per profile for base images, LibTorch and builds
 
 ### Linux (`build-apt.sh`)
 
@@ -22,8 +33,10 @@ Produces `libminkowski-cpp-dev_<VERSION>_amd64.deb` for **Ubuntu 22.04 + CUDA 12
 sudo apt install build-essential cmake ninja-build dpkg-dev libomp-dev
 ```
 
-- CUDA Toolkit 12.4+ (`nvcc` on `PATH`) — optional; falls back to CPU-only if absent
-- LibTorch 2.5.1 (CXX11 ABI, CUDA 12.4) extracted somewhere (e.g. `/opt/libtorch`)
+- CUDA Toolkit 12.4, 13.2 or 13.4 (`nvcc` on `PATH`) — detected automatically;
+  falls back to CPU-only if absent and no `--cuda-version` was requested
+- Matching Linux LibTorch from the table above, extracted (e.g. `/opt/libtorch`)
+- CMake 3.24+; 4.2.3 is used by Docker for CUDA 13 support
 
 ---
 
@@ -33,6 +46,8 @@ sudo apt install build-essential cmake ninja-build dpkg-dev libomp-dev
 
 ```powershell
 .\apt\build-apt.ps1
+.\apt\build-apt.ps1 -CudaVersion 132
+.\apt\build-apt.ps1 -CudaVersion 124
 ```
 
 ### Linux — native (no Docker)
@@ -40,6 +55,7 @@ sudo apt install build-essential cmake ninja-build dpkg-dev libomp-dev
 ```bash
 chmod +x apt/build-apt.sh
 ./apt/build-apt.sh --libtorch /opt/libtorch
+./apt/build-apt.sh --libtorch /opt/libtorch --cuda-version 134
 ```
 
 The finished package is written to the `apt/` directory in both cases.
@@ -52,10 +68,12 @@ The finished package is written to the `apt/` directory in both cases.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `-Version` | `1.0.0` | Semver string embedded in the package filename and metadata |
+| `-Version` | `1.3.0` | Semver string embedded in the package filename and metadata |
+| `-CudaVersion` | `134` | Matched profile: `124`, `132` or `134` |
+| `-CudaArchitectures` | `86` | CMake GPU architectures, e.g. `"86;89;90"` |
 | `-Jobs` | `4` | Parallel ninja compile jobs inside the container |
 | `-OutputDir` | `apt\` | Directory to write the .deb into |
-| `-ImageTag` | `minkowski4cpp-deb-builder:latest` | Docker image tag (used for layer caching) |
+| `-ImageTag` | `minkowski4cpp-deb-builder:cu<PROFILE>` | Docker image tag (used for layer caching) |
 | `-KeepImage` | _(switch)_ | Keep the intermediate Docker image after the build |
 
 **Example:**
@@ -73,7 +91,9 @@ The finished package is written to the `apt/` directory in both cases.
 | `--libtorch PATH` | _(required)_ | Path to LibTorch root directory |
 | `--version STRING` | `1.0.0` | Semver string embedded in the package |
 | `--jobs N` | `nproc` | Parallel ninja compile jobs |
-| `--build-dir PATH` | `<project>/build-deb` | CMake build directory |
+| `--cuda-version N` | detected | Require `124`, `132` or `134`; error if nvcc is missing or mismatched |
+| `--cuda-architectures LIST` | `86` | CMake GPU architectures, e.g. `'86;89;90'` |
+| `--build-dir PATH` | `<project>/build-deb-cu<PROFILE>` | CMake build directory (`build-deb-cpu` for CPU-only) |
 | `--output PATH` | `apt/` | Directory to write the .deb into |
 | `--keep-build` | _(flag)_ | Keep the CMake build tree after packaging |
 
@@ -89,7 +109,7 @@ The finished package is written to the `apt/` directory in both cases.
 
 ### Windows (Docker path)
 
-1. **Dockerfile stage `builder`** — starts from `nvidia/cuda:12.4.0-devel-ubuntu22.04`, installs build tools, downloads LibTorch 2.5.1 + CUDA 12.4, copies the project source, and runs `cmake --install` into a staging tree.
+1. **Dockerfile stage `builder`** — selects the matched NVIDIA base image and LibTorch download, installs build tools, copies the project source, and runs `cmake --install` into a staging tree. CUDA 13 uses cuDNN development images and CMake 4.2.3.
 2. **Package assembly** — writes `DEBIAN/control` and `DEBIAN/postinst`, then calls `dpkg-deb --build`.
 3. **Dockerfile stage `artifact`** — `FROM scratch` layer that holds only the .deb, enabling `--output type=local` to stream it directly to the host without running a container.
 
@@ -117,11 +137,18 @@ After install, `ldconfig` is run automatically via `DEBIAN/postinst`.
 ## Installing on a Target Machine
 
 ```bash
-sudo dpkg -i libminkowski-cpp-dev_1.0.0_amd64.deb
+sudo dpkg -i libminkowski-cpp-dev_1.3.0_cu134_amd64.deb
 sudo ldconfig
 ```
 
-**Dependencies** — the package declares `libgomp1` and `libstdc++6` as runtime dependencies (normally already present).  LibTorch is **not** bundled; install it separately and tell CMake where it is:
+Install on the matching Ubuntu release with the matching CUDA toolkit and
+LibTorch build, not on an arbitrary Ubuntu 22.04 machine. For example, the
+default Docker output is `libminkowski-cpp-dev_1.3.0_cu134_amd64.deb` for Ubuntu
+24.04. Native CPU-only builds use the filename suffix `_cpu_amd64.deb`.
+The container path is amd64 only. CUDA 13 cannot compile GPU architectures
+below SM 75; use CUDA 12.4 for older GPUs.
+
+**Dependencies** — the package declares `libgomp1` and `libstdc++6` as runtime dependencies (normally already present). LibTorch and CUDA are **not** bundled; install them separately and tell CMake where LibTorch is:
 
 ```cmake
 cmake -DCMAKE_PREFIX_PATH=/path/to/libtorch ..
