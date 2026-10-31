@@ -13,6 +13,10 @@ project(MinkowskiEngineCPP
 option(CPU_ONLY "Build without Minkowski CUDA kernels" OFF)
 option(MINK_BUILD_TESTS "Build test executables" ON)
 option(MINK_ENABLE_OPENMP "Enable OpenMP support" ON)
+option(MINKOWSKI_ENABLE_GAUSSIAN
+    "Enable native Gaussian representation support" ON)
+option(MINK_BUILD_GAUSSIAN_BENCHMARKS
+    "Build Gaussian tensor and optimization benchmarks" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -167,6 +171,13 @@ file(GLOB MINK_CPU_SOURCES CONFIGURE_DEPENDS
 list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*test.*")
 list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*example.*")
 
+if(MINKOWSKI_ENABLE_GAUSSIAN)
+    file(GLOB MINK_GAUSSIAN_CPU_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/gaussian/*.cpp"
+    )
+    list(APPEND MINK_CPU_SOURCES ${MINK_GAUSSIAN_CPU_SOURCES})
+endif()
+
 set(MINK_GPU_SOURCES)
 
 if(NOT CPU_ONLY)
@@ -183,6 +194,13 @@ if(NOT CPU_ONLY)
 
     list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*test.*")
     list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*example.*")
+
+    if(MINKOWSKI_ENABLE_GAUSSIAN)
+        file(GLOB MINK_GAUSSIAN_GPU_SOURCES CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/gaussian/*.cu"
+        )
+        list(APPEND MINK_GPU_SOURCES ${MINK_GAUSSIAN_GPU_SOURCES})
+    endif()
 
 endif()
 
@@ -248,6 +266,11 @@ if(CPU_ONLY)
 else()
     target_compile_definitions(minkowski_cpp
         PUBLIC USE_CUDA)
+endif()
+
+if(MINKOWSKI_ENABLE_GAUSSIAN)
+    target_compile_definitions(minkowski_cpp
+        PUBLIC MINKOWSKI_ENABLE_GAUSSIAN)
 endif()
 
 if(WIN32)
@@ -343,8 +366,43 @@ if(NOT CPU_ONLY)
 endif()
 
 if(MINK_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
-    target_link_libraries(minkowski_cpp
-        PUBLIC OpenMP::OpenMP_CXX)
+    set(MINK_IOMP_DLL "${TORCH_INSTALL_PREFIX}/lib/libiomp5md.dll")
+    set(MINK_IOMP_LIB "${CMAKE_BINARY_DIR}/libiomp5md.lib")
+    if(MSVC AND TORCH_INSTALL_PREFIX AND EXISTS "${MINK_IOMP_DLL}")
+        # LibTorch loads libiomp5md, and a second LLVM-style runtime
+        # (libomp140) in the same process aborts with "OMP: Error #15".
+        # LibTorch ships no import library, so build one from the DLL and link
+        # the engine against the runtime that is already loaded.
+        if(NOT EXISTS "${MINK_IOMP_LIB}")
+            get_filename_component(_mink_msvc_bin "${CMAKE_LINKER}" DIRECTORY)
+            execute_process(
+                COMMAND "${_mink_msvc_bin}/dumpbin.exe" /nologo /exports "${MINK_IOMP_DLL}"
+                OUTPUT_VARIABLE _mink_exports RESULT_VARIABLE _mink_dumpbin_rc)
+            set(_mink_def "LIBRARY libiomp5md\nEXPORTS\n")
+            string(REGEX MATCHALL "\n +[0-9]+ +[0-9A-F]+ +[0-9A-F]+ +[A-Za-z_0-9@?$]+"
+                   _mink_rows "${_mink_exports}")
+            foreach(_row IN LISTS _mink_rows)
+                string(REGEX REPLACE "^\n +[0-9]+ +[0-9A-F]+ +[0-9A-F]+ +" "" _name "${_row}")
+                string(APPEND _mink_def "    ${_name}\n")
+            endforeach()
+            file(WRITE "${CMAKE_BINARY_DIR}/libiomp5md.def" "${_mink_def}")
+            execute_process(
+                COMMAND "${_mink_msvc_bin}/lib.exe" /nologo /machine:x64
+                        "/def:${CMAKE_BINARY_DIR}/libiomp5md.def" "/out:${MINK_IOMP_LIB}"
+                RESULT_VARIABLE _mink_lib_rc)
+        endif()
+    endif()
+
+    if(EXISTS "${MINK_IOMP_LIB}")
+        message(STATUS "OpenMP runtime: LibTorch libiomp5md")
+        target_compile_options(minkowski_cpp PUBLIC
+            $<$<COMPILE_LANGUAGE:CXX>:/openmp:llvm>)
+        target_link_libraries(minkowski_cpp PUBLIC "${MINK_IOMP_LIB}")
+        target_link_options(minkowski_cpp PUBLIC /NODEFAULTLIB:libomp140.x86_64.lib)
+    else()
+        target_link_libraries(minkowski_cpp
+            PUBLIC OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 # ============================================================
@@ -396,7 +454,11 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/bench_adaptive.cpp
     )
 
-    foreach(tgt adaptive_tests adaptive_bench)
+    add_executable(sphere
+        tests/sphere.cpp
+    )
+
+    foreach(tgt adaptive_tests adaptive_bench sphere)
         target_link_libraries(${tgt} PRIVATE minkowski_cpp)
         target_include_directories(${tgt} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -404,6 +466,7 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
             "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
             "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
             "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive"
         )
         if(MINK_TORCH_CXX_FLAGS)
@@ -416,6 +479,100 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
     enable_testing()
     add_test(NAME adaptive_tests COMMAND adaptive_tests)
 
+endif()
+
+# ============================================================
+# Gaussian tests
+# ============================================================
+
+if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
+    add_executable(gaussian_tests
+        tests/gaussian/main.cpp
+        tests/gaussian/test_gaussian3d.cpp
+        tests/gaussian/test_gaussian_tensor.cpp
+        tests/gaussian/test_gaussian_ply.cpp
+        tests/gaussian/test_gaussian_render.cpp
+    )
+
+    target_compile_definitions(gaussian_tests PRIVATE
+        MINK_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    )
+    target_link_libraries(gaussian_tests PRIVATE minkowski_cpp)
+    target_include_directories(gaussian_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive"
+    )
+    if(MINK_TORCH_CXX_FLAGS)
+        target_compile_options(gaussian_tests PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+        )
+    endif()
+
+    # ============================================================
+    # Gaussian benchmarks
+    # ============================================================
+
+    if(MINK_BUILD_GAUSSIAN_BENCHMARKS AND MINKOWSKI_ENABLE_GAUSSIAN)
+        add_executable(gaussian_bench
+            benchmarks/gaussian_bench.cpp
+        )
+        target_link_libraries(gaussian_bench PRIVATE minkowski_cpp)
+        target_include_directories(gaussian_bench PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        )
+        target_compile_definitions(gaussian_bench PRIVATE
+            MINK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(gaussian_bench PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+    endif()
+
+    if(MINK_BUILD_GAUSSIAN_BENCHMARKS AND MINKOWSKI_ENABLE_GAUSSIAN)
+        add_executable(gaussian_ply_bench
+            benchmarks/gaussian_ply_bench.cpp
+        )
+        target_link_libraries(gaussian_ply_bench PRIVATE minkowski_cpp)
+        target_include_directories(gaussian_ply_bench PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        )
+        target_compile_definitions(gaussian_ply_bench PRIVATE
+            MINK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+            MINK_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(gaussian_ply_bench PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+    endif()
+
+    enable_testing()
+    add_test(NAME gaussian_tests COMMAND gaussian_tests)
+endif()
+
+# Windows resolves DLLs next to the executable, so without this the binaries
+# exit silently (0xC0000135) unless LibTorch's lib directory is on PATH.
+option(MINK_COPY_TORCH_DLLS "Copy LibTorch DLLs next to the built executables (Windows)" ON)
+if(WIN32 AND MINK_COPY_TORCH_DLLS AND TORCH_INSTALL_PREFIX)
+    file(GLOB MINK_TORCH_RUNTIME_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
+    if(MINK_TORCH_RUNTIME_DLLS)
+        add_custom_target(mink_copy_torch_dlls ALL
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${MINK_TORCH_RUNTIME_DLLS} "${CMAKE_BINARY_DIR}"
+            COMMENT "Copying LibTorch DLLs to ${CMAKE_BINARY_DIR}"
+            COMMAND_EXPAND_LISTS
+        )
+    endif()
 endif()
 
 # ============================================================
@@ -433,6 +590,7 @@ install(DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/minkowski"
     FILES_MATCHING
+        PATTERN "gaussian" EXCLUDE
         PATTERN "*.hpp"
         PATTERN "*.h"
         PATTERN "*.hh"
@@ -440,6 +598,21 @@ install(DIRECTORY
         PATTERN "*.inl"
         PATTERN "*.cuh"
 )
+
+if(MINKOWSKI_ENABLE_GAUSSIAN)
+    install(DIRECTORY
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/gaussian/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/minkowski/gaussian"
+        FILES_MATCHING
+            PATTERN "gaussian_cuda.hpp" EXCLUDE
+            PATTERN "*.hpp"
+            PATTERN "*.h"
+            PATTERN "*.hh"
+            PATTERN "*.hxx"
+            PATTERN "*.inl"
+            PATTERN "*.cuh"
+    )
+endif()
 
 # ============================================================
 # Package configuration

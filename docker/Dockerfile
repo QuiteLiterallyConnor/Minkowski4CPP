@@ -7,7 +7,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install essential build tools and dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    cmake \
     git \
     wget \
     unzip \
@@ -17,6 +16,15 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     libomp-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 22.04 ships CMake 3.22; the project requires 3.24+.
+ARG CMAKE_VERSION=3.28.6
+RUN wget -q "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+         -O /tmp/cmake.tar.gz && \
+    tar -xzf /tmp/cmake.tar.gz -C /opt && \
+    ln -sf /opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/* /usr/local/bin/ && \
+    rm /tmp/cmake.tar.gz && \
+    cmake --version
 
 # Set environment variables for CUDA
 ENV CUDA_HOME=/usr/local/cuda

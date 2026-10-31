@@ -21,7 +21,7 @@
 param(
     # Semver string embedded in the .deb filename and package metadata.
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = "1.0.0",
+    [string]$Version = "1.3.0",
 
     # Parallel compile jobs passed to ninja inside the container.
     [int]$Jobs = 4,
