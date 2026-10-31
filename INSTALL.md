@@ -2,11 +2,15 @@ Installation
 ============
 
 Prerequisites
-- CMake >= 3.18
-- A C++17 toolchain
+- CMake >= 3.24
+- A C++20 toolchain
 - LibTorch (download and set `CMAKE_PREFIX_PATH` to LibTorch directory)
 - Ninja
 - CUDA toolkit (optional, required for GPU build)
+
+For current platform profiles, complete build commands, and downstream CMake
+integration, see the [installation guide](docs/installation.md) and
+[quick start](docs/quickstart.md) in the GitHub Pages documentation.
 
 Build and install (Linux / macOS)
 
@@ -40,9 +44,11 @@ This will install headers to `/usr/local/include/minkowski` and libraries to `/u
 
 Docker
 ------
-The `docker/` folder contains Dockerfile(s). Use `docker/build-and-push.sh` to build and push images.
+Use `docker/docker-build.sh` or `docker\docker-build.ps1` to build images.
+The default is CUDA 13.4; select `--cuda-version 132` / `-CudaVersion 132`
+for CUDA 13.2, or `124` for legacy CUDA 12.4.
+See [docker/README.md](docker/README.md) for the matched Ubuntu/LibTorch profiles.
 
 Windows
 -------
 Experimental Windows support has been added. Please ensure you have a matching LibTorch build for MSVC and that you run the build from a Visual Studio Developer PowerShell or with the MSVC environment set.
-

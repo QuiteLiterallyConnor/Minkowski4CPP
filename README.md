@@ -4,6 +4,10 @@
 
 **A C++ port of NVIDIA's MinkowskiEngine with full CUDA support for Windows and Linux.**
 
+**Documentation:** [GitHub Pages](https://quiteliterallyconnor.github.io/Minkowski4CPP/)
+or browse the [documentation source](docs/index.md) for installation, API guides,
+examples, testing, and troubleshooting.
+
 Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine](https://github.com/NVIDIA/MinkowskiEngine) into native C++ workflows, with first-class CUDA acceleration on both major platforms, something the original Python-based library does not support.
 
 > ### Gaussian splats are built in
@@ -28,6 +32,8 @@ Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine
 | Platform | CUDA Version | Torch Version | Status |
 |---|---|---|---|
 | Ubuntu 22.04 | 12.4.0 | 2.5.1 | Verified |
+| Ubuntu 24.04 (apt/Docker) | 13.2.1 | 2.15.0 / cu132 | Builder profile |
+| Ubuntu 24.04 (apt/Docker, default) | 13.4.3 | 2.15.0 / cu134 | Builder profile |
 | Windows | 13.2 | 2.15.0 | Verified |
 | Windows | 13.4 | 2.15.0 | Verified |
 
@@ -46,8 +52,8 @@ Minkowski4CPP brings the power of sparse tensor operations from [MinkowskiEngine
 
 ### Linux
 
-- [CUDA Toolkit 12.4.0](https://developer.nvidia.com/cuda-downloads)
-- [LibTorch 2.5.1](https://pytorch.org/get-started/locally/) (pre-built, extract only)
+- [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) 13.4 (default), 13.2, or legacy 12.4
+- [LibTorch](https://pytorch.org/get-started/locally/) matching CUDA: 2.15.0/cu134 or cu132, or 2.5.1/cu124 (Linux CXX11 ABI)
 - `ninja-build` â€” install via your package manager
 - `cmake` â€” install via your package manager
 
@@ -117,6 +123,8 @@ ninja -j4
 
 ```powershell
 .\apt\build-apt.ps1
+.\apt\build-apt.ps1 -CudaVersion 132
+.\apt\build-apt.ps1 -CudaVersion 124
 ```
 
 **From Linux** (native, no Docker â€” requires CMake, Ninja, and LibTorch):
@@ -126,14 +134,18 @@ chmod +x apt/build-apt.sh
 ./apt/build-apt.sh --libtorch /opt/libtorch
 ```
 
-Both scripts write `libminkowski-cpp-dev_1.0.0_amd64.deb` to the `apt/` directory. Install it on any Ubuntu 22.04 machine:
+Both scripts write CUDA-specific packages to the `apt/` directory. The Docker
+default is CUDA 13.4 on Ubuntu 24.04 (package version 1.3.0); the native script
+detects the installed toolkit (package version 1.0.0). Install on the matching
+Ubuntu release with matching CUDA and LibTorch:
 
 ```bash
-sudo dpkg -i libminkowski-cpp-dev_1.0.0_amd64.deb
+sudo dpkg -i libminkowski-cpp-dev_1.3.0_cu134_amd64.deb
 sudo ldconfig
 ```
 
 See [apt/README.md](apt/README.md) for all parameters and details.
+See [docker/README.md](docker/README.md) for container builds with the same profiles.
 
 ---
 

@@ -1,0 +1,3 @@
+apt/*.sh text eol=lf
+docker/*.sh text eol=lf
+tests/builders/*.sh text eol=lf
