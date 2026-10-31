@@ -255,7 +255,8 @@ struct CudaRasterFunction
                                     grad_out, saved[4], saved[5], m[0], m[1],
                                     grad_attrs);
     const auto grad_background =
-        (saved[4].unsqueeze(-1) * grad_out.slice(2, 0, 3)).sum({0, 1});
+        (saved[4].unsqueeze(-1) * grad_out.slice(2, 0, 3))
+            .sum(at::IntArrayRef{0, 1});
     return {grad_attrs, grad_background, at::Tensor(), at::Tensor()};
   }
 };
