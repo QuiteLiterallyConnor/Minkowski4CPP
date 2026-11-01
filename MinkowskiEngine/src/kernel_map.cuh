@@ -32,6 +32,7 @@
 #include "coordinate_map_functors.cuh"
 #include "storage.cuh"
 #include "types.hpp"
+#include "thrust_policy.cuh"
 
 #include <functional>
 #include <map>
@@ -315,7 +316,7 @@ public:
     LOG_DEBUG("Decomposing", kernels.end() - kernels.begin(), "elements");
     // the memory space must be initialized first!
     // sort
-    THRUST_CHECK(thrust::sort_by_key(thrust::device,            //
+    THRUST_CHECK(thrust::sort_by_key(::minkowski::detail::thrust_policy(),            //
                                      kernels.begin(),           // key begin
                                      kernels.end(),             // key end
                                      thrust::make_zip_iterator( // value begin
@@ -362,7 +363,7 @@ public:
 
     try {
       auto end = thrust::reduce_by_key(
-          thrust::device,  // policy
+          ::minkowski::detail::thrust_policy(),  // policy
           kernels.begin(), // key begin
           kernels.end(),   // key end
           thrust::make_zip_iterator(
