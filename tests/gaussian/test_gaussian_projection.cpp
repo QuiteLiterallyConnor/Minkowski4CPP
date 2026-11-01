@@ -18,8 +18,10 @@
 #include <ATen/cuda/CUDAContext.h>
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -231,6 +233,89 @@ TEST(gaussian3d_double_mahalanobis_thin_axes_are_exact) {
       for (int r = 0; r < 3; ++r)
         p[r] += 1.7 * g.scale[axis] * rotation[r][axis];
       CHECK_NEAR(g.mahalanobis_squared(p), 2.89, 1e-9);
+    }
+  }
+}
+
+TEST(gaussian_projection_offcenter_clamped_gradients_match_finite_differences) {
+  // Off-centre principal point (cx = W, cy = H/2) with two splats whose
+  // centres lie beyond the clamp limits (left, top) and one inside. Steps
+  // keep every centre on its side of the clamp; splats are large (sigma ~30
+  // px) with opacity 0.5, so every pixel stays well above the 1/255 cut-off
+  // and below the 0.99 clamp, and T >= 0.125 (no early stop): the loss is
+  // smooth in every perturbed input.
+  auto camera = straight_camera(48, 40);
+  camera.cx = 48.0;
+  const auto pixels = at::tensor({-12.0, 14.0, 30.0, -10.0, 40.0, 25.0},
+                                 at::kDouble)
+                          .reshape({3, 2});
+  const auto depths = at::tensor({2.6, 3.0, 3.4}, at::kDouble);
+  auto base = splats_at_pixels(camera, pixels, depths, 2.0f, 11);
+  base.opacities.fill_(0.5f);
+  // Bounded anisotropy: every splat keeps alpha >= 0.04 on every pixel.
+  base.scales = at::tensor({2.0f, 2.6f, 1.6f, 2.4f, 1.8f, 2.2f, 1.7f, 2.3f, 2.8f})
+                    .reshape({3, 3});
+  const double fx = camera.fx;
+  const double left = -(camera.cx + 0.15 * 48.0) / fx;  // tx limit
+  const double top = -(camera.cy + 0.15 * 40.0) / camera.fy;
+  CHECK((pixels[0][0].item<double>() - camera.cx) / fx < left - 3.0 / fx);
+  CHECK((pixels[1][1].item<double>() - camera.cy) / camera.fy <
+        top - 3.0 / camera.fy);
+  const auto gen = at::make_generator<at::CPUGeneratorImpl>(12);
+  const auto wi = at::randn({40, 48, 3}, gen, at::kDouble);
+  const auto wa = at::randn({40, 48}, gen, at::kDouble);
+  const auto wd = 0.3 * at::randn({40, 48}, gen, at::kDouble);
+  for (const auto &path : projection_paths()) {
+    auto loss_of = [&](const RenderOutput &o) {
+      return (o.image.cpu().to(at::kDouble) * wi).sum() +
+             (o.alpha.cpu().to(at::kDouble) * wa).sum() +
+             (o.depth.cpu().to(at::kDouble) * wd).sum();
+    };
+    {
+      torch::NoGradGuard guard;
+      const auto out = render_splats(base.to(path.device), camera, path.kernels);
+      CHECK(out.alpha.min().item<double>() > 0.4); // every pixel covered
+    }
+    Splats live = base.to(path.device);
+    live.positions = live.positions.clone().requires_grad_(true);
+    live.scales = live.scales.clone().requires_grad_(true);
+    live.rotations = live.rotations.clone().requires_grad_(true);
+    loss_of(render_splats(live, camera, path.kernels)).backward();
+    const std::vector<std::pair<const char *, at::Tensor Splats::*>> fields{
+        {"positions", &Splats::positions},
+        {"scales", &Splats::scales},
+        {"rotations", &Splats::rotations}};
+    for (const auto &[name, member] : fields) {
+      const auto analytic = (live.*member).grad().cpu().to(at::kDouble);
+      const auto values = (base.*member).clone();
+      const double h = 2e-3;
+      std::vector<double> numeric;
+      double scale = 0.0;
+      for (int64_t i = 0; i < values.numel(); ++i) {
+        double l[2];
+        for (int s = 0; s < 2; ++s) {
+          torch::NoGradGuard guard;
+          Splats probe = base;
+          probe.*member = values.clone();
+          (probe.*member).view({-1})[i] += (s == 0 ? h : -h);
+          l[s] = loss_of(render_splats(probe.to(path.device), camera,
+                                       path.kernels))
+                     .item<double>();
+        }
+        numeric.push_back((l[0] - l[1]) / (2 * h));
+        scale = std::max(scale, std::abs(numeric.back()));
+      }
+      const double atol = path.kernels ? 5e-3 : 2e-3;
+      double worst = 0.0;
+      for (int64_t i = 0; i < values.numel(); ++i) {
+        const double a = analytic.view({-1})[i].item<double>();
+        const double tol = 1e-2 * std::abs(numeric[i]) + atol * scale + 1e-9;
+        worst = std::max(worst, std::abs(a - numeric[i]) / tol);
+      }
+      std::cout << "         " << path.name << " off-centre clamped " << name
+                << ": max|grad| " << scale << ", err/tol " << worst << "\n";
+      CHECK(scale > 0.0);
+      CHECK(worst <= 1.0);
     }
   }
 }
