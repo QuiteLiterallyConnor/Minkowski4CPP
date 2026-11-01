@@ -411,6 +411,9 @@ endif()
 
 if(MINK_BUILD_TESTS)
 
+    enable_testing()
+    add_subdirectory(tests/utils)
+
     add_executable(train
         tests/train.cpp
     )
@@ -448,6 +451,8 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_gradients.cpp
         tests/adaptive/test_regression.cpp
         tests/adaptive/test_sphere.cpp
+        tests/adaptive/test_overlap_descent.cpp
+        tests/adaptive/test_parallel_kmap.cpp
         tests/adaptive/test_coverage.cpp
     )
 
@@ -455,11 +460,15 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/bench_adaptive.cpp
     )
 
+    add_executable(adaptive_kmap_bench
+        tests/adaptive/bench_adaptive_kmap.cpp
+    )
+
     add_executable(sphere
         tests/sphere.cpp
     )
 
-    foreach(tgt adaptive_tests adaptive_bench sphere)
+    foreach(tgt adaptive_tests adaptive_bench adaptive_kmap_bench sphere)
         target_link_libraries(${tgt} PRIVATE minkowski_cpp)
         target_include_directories(${tgt} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -493,6 +502,7 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         tests/gaussian/test_gaussian_tensor.cpp
         tests/gaussian/test_gaussian_ply.cpp
         tests/gaussian/test_gaussian_render.cpp
+        tests/gaussian/test_gaussian_cuda_backward.cpp
     )
 
     target_compile_definitions(gaussian_tests PRIVATE
