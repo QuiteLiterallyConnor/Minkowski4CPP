@@ -2,6 +2,11 @@
 //
 //   core_conv_bench [--device cpu|cuda] [--points N] [--extent E] [--batches B] [--cin C]
 //                   [--cout C] [--stride S] [--warmup W] [--repeats R] [--double] [--seed S]
+//                   [--rebuild]
+//
+// --rebuild: every iteration builds a new SparseTensor (coordinate map insertion, stride and
+// kernel maps) from the same coordinates, like a training step on a new batch; fwd_ms then
+// includes the map construction.
 //
 // Builds one random sparse tensor (unique coordinates in [0, E)^3 per batch), runs W warm-up
 // iterations (the first one builds and caches the kernel map), then R timed iterations of
@@ -70,6 +75,7 @@ int run(int argc, char** argv) {
     int64_t points = 50000, extent = 96, batches = 2, cin = 32, cout = 32, stride = 1;
     int warmup = 2, repeats = 7;
     bool use_double = false;
+    bool rebuild = false;
     uint64_t seed = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -84,6 +90,7 @@ int run(int argc, char** argv) {
         else if (a == "--warmup") warmup = std::stoi(next());
         else if (a == "--repeats") repeats = std::stoi(next());
         else if (a == "--double") use_double = true;
+        else if (a == "--rebuild") rebuild = true;
         else if (a == "--seed") seed = std::stoull(next());
         else {
             std::cerr << "unknown argument " << a << "\n";
@@ -124,7 +131,7 @@ int run(int argc, char** argv) {
             if (p.grad().defined()) p.mutable_grad().zero_();
         sync(cuda);
         auto t0 = clk::now();
-        auto out = conv->forward(x);
+        auto out = rebuild ? conv->forward(SparseTensor(feats, coords)) : conv->forward(x);
         sync(cuda);
         const double f_ms = ms_since(t0);
         auto t1 = clk::now();
@@ -143,6 +150,7 @@ int run(int argc, char** argv) {
     }
 
     std::cout << "device  " << (cuda ? 1 : 0) << "\n";
+    std::cout << "rebuild  " << (rebuild ? 1 : 0) << "\n";
     std::cout << "in_rows  " << coords.size(0) << "\n";
     std::cout << "threads_before_tensor  " << threads_before << "\n";
     std::cout << "threads_after_tensor  " << threads_after << "\n";
