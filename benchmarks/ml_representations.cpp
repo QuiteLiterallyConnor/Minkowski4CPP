@@ -639,8 +639,10 @@ double cuda_peak_mb(bool reserved = false) {
   if (torch::cuda::is_available()) {
     auto st = c10::cuda::CUDACachingAllocator::getDeviceStats(0);
     const auto &s = reserved ? st.reserved_bytes : st.allocated_bytes;
-    return static_cast<double>(s[static_cast<size_t>(c10::CachingAllocator::StatType::AGGREGATE)].peak) /
-           (1024.0 * 1024.0);
+    // c10::CachingDeviceAllocator names StatType in LibTorch 2.5 (CUDA 12.4
+    // profile) and re-exports c10::CachingAllocator's in 2.15.
+    const auto agg = static_cast<size_t>(c10::CachingDeviceAllocator::StatType::AGGREGATE);
+    return static_cast<double>(s[agg].peak) / (1024.0 * 1024.0);
   }
 #endif
   (void)reserved;
