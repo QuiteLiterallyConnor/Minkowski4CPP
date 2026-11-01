@@ -30,6 +30,9 @@ struct RenderOutput {
   at::Tensor means2d; // [N, 2] screen-space centers; call backward to fill .grad()
   at::Tensor visible; // [N] bool, true if the Gaussian contributed to the image
   at::Tensor radii;   // [N] int64 screen radius in pixels (0 if culled)
+  // [] int64 number of (tile, Gaussian) pairs the rasterizer composites; read
+  // it with .item() only when needed (it synchronizes CUDA).
+  at::Tensor tile_pairs;
 };
 
 // Differentiable tile-based alpha-compositing rasterizer written with LibTorch

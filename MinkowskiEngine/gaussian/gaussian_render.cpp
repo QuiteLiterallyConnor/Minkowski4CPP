@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 
 namespace minkowski {
 namespace gaussian {
@@ -18,6 +20,9 @@ constexpr float kMinAlpha = 1.0f / 255.0f;
 constexpr float kMaxAlpha = 0.99f;
 constexpr float kStopTransmittance = 1e-4f;
 constexpr double kLowPass = 0.3;
+// Added to the squared cut-off radius of the tile bounds so float rounding in
+// the rasterizers never drops a pixel whose alpha is exactly at 1/255.
+constexpr double kExtentSlack = 1e-2;
 
 at::Tensor quaternion_matrices(const at::Tensor &q) {
   const auto n = q / q.norm(2, {1}, true).clamp_min(1e-12);
@@ -198,6 +203,12 @@ void build_tile_lists(const at::Tensor &bounds, int64_t rows, int64_t cols,
   const auto widths = x1 - x0 + 1;
   const auto counts = widths * (y1 - y0 + 1);
   const int64_t total = m > 0 ? counts.sum().item<int64_t>() : 0;
+  // The CUDA kernels index pairs and Gaussians with int32.
+  TORCH_CHECK(total <= std::numeric_limits<int32_t>::max() &&
+                  m <= std::numeric_limits<int32_t>::max(),
+              "render: ", total, " (tile, Gaussian) pairs for ", m,
+              " Gaussians exceed the int32 range of the CUDA rasterizer; "
+              "render fewer or smaller Gaussians or a smaller image");
   if (total == 0) {
     ids = at::zeros({1}, bounds.options().dtype(at::kInt));
     ranges = at::zeros({tiles, 2}, bounds.options().dtype(at::kInt));
@@ -342,19 +353,29 @@ RenderOutput render_gaussians(const at::Tensor &positions,
   const auto conic_b = -b * inverse_det;
   const auto conic_c = a * inverse_det;
 
-  at::Tensor radii_long, visible, order_ids, bounds;
+  at::Tensor radii_long, visible, order_ids, bounds, tile_pairs;
   {
     torch::NoGradGuard no_grad;
-    const auto mid = 0.5 * (a + c);
-    const auto lambda =
-        mid + at::sqrt((mid * mid - det).clamp_min(0.1));
-    const auto radius = at::ceil(3.0 * at::sqrt(lambda));
+    // A pixel at Mahalanobis distance m gets alpha = o * exp(-m^2 / 2), which
+    // is dropped below 1/255. So nothing beyond m^2 = 2 ln(255 o) can
+    // contribute (at most 3.33 sigma for o = 1; less for transparent splats),
+    // and the tight axis-aligned box of that ellipse is m * sqrt(diag(cov)).
+    // The small slack keeps pixels whose alpha rounds to exactly 1/255.
+    const auto opacity = opacities.detach().reshape({-1});
+    const auto extent = at::sqrt(
+        (2.0 * at::log(opacity.clamp_min(kMinAlpha) * 255.0)).clamp_min(0.0) +
+        kExtentSlack);
+    const auto radius_x = at::ceil(extent * at::sqrt(a.detach()));
+    const auto radius_y = at::ceil(extent * at::sqrt(c.detach()));
     const auto mx = x2.detach(), my = y2.detach();
     visible = (z > camera.near_plane) & (det > 1e-12) &
-              (opacities.reshape({-1}) >= kMinAlpha) &
-              at::isfinite(mx) & at::isfinite(my) & at::isfinite(radius) &
-              (mx + radius >= 0) & (mx - radius < static_cast<double>(width)) &
-              (my + radius >= 0) & (my - radius < static_cast<double>(height));
+              (opacity >= kMinAlpha) & at::isfinite(mx) & at::isfinite(my) &
+              at::isfinite(radius_x) & at::isfinite(radius_y) &
+              (mx + radius_x >= 0) &
+              (mx - radius_x < static_cast<double>(width)) &
+              (my + radius_y >= 0) &
+              (my - radius_y < static_cast<double>(height));
+    const auto radius = at::maximum(radius_x, radius_y);
     radii_long = at::where(visible, radius, at::zeros_like(radius)).to(at::kLong);
     const auto ids = visible.nonzero().squeeze(1);
     const auto order = z.index_select(0, ids).argsort();
@@ -362,16 +383,20 @@ RenderOutput render_gaussians(const at::Tensor &positions,
 
     const auto sx = mx.index_select(0, order_ids);
     const auto sy = my.index_select(0, order_ids);
-    const auto sr = radius.index_select(0, order_ids);
+    const auto srx = radius_x.index_select(0, order_ids);
+    const auto sry = radius_y.index_select(0, order_ids);
     const double tile = static_cast<double>(tile_size);
     const auto max_col = (width + tile_size - 1) / tile_size - 1;
     const auto max_row = (height + tile_size - 1) / tile_size - 1;
     bounds = at::stack(
-        {at::floor((sx - sr) / tile).clamp(0, max_col).to(at::kLong),
-         at::floor((sx + sr) / tile).clamp(0, max_col).to(at::kLong),
-         at::floor((sy - sr) / tile).clamp(0, max_row).to(at::kLong),
-         at::floor((sy + sr) / tile).clamp(0, max_row).to(at::kLong)},
+        {at::floor((sx - srx) / tile).clamp(0, max_col).to(at::kLong),
+         at::floor((sx + srx) / tile).clamp(0, max_col).to(at::kLong),
+         at::floor((sy - sry) / tile).clamp(0, max_row).to(at::kLong),
+         at::floor((sy + sry) / tile).clamp(0, max_row).to(at::kLong)},
         1);
+    tile_pairs = ((bounds.select(1, 1) - bounds.select(1, 0) + 1) *
+                  (bounds.select(1, 3) - bounds.select(1, 2) + 1))
+                     .sum();
   }
 
   auto gather = [&](const at::Tensor &t) { return t.index_select(0, order_ids); };
@@ -406,6 +431,7 @@ RenderOutput render_gaussians(const at::Tensor &positions,
   result.means2d = means2d;
   result.visible = visible;
   result.radii = radii_long;
+  result.tile_pairs = tile_pairs;
   return result;
 }
 
