@@ -19,14 +19,17 @@ using sphere_detail::SphereGeometry;
 constexpr int kThreads = 256;
 
 // One thread per frontier cell: emits its 8 children, whether each child is still a
-// boundary cell, and the change in the volume estimate if this cell is split.
+// boundary cell, and the change in the volume estimate if this cell is split (and, when
+// wrong_delta is non-null, the change in the misclassified volume).
 __global__ void expand_kernel(SphereGeometry s, const int64_t *coords, int64_t n, int level,
-                              int64_t *child_coords, bool *child_boundary, double *delta) {
+                              int64_t *child_coords, bool *child_boundary, double *delta,
+                              double *wrong_delta) {
   const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= n)
     return;
   const int64_t px = coords[i * 3], py = coords[i * 3 + 1], pz = coords[i * 3 + 2];
   double change = -s.contribution(px, py, pz, level);
+  double wrong = wrong_delta ? -s.misclassified_volume(px, py, pz, level) : 0.0;
   for (int child = 0; child < 8; ++child) {
     const int64_t cx = 2 * px + (child & 1);
     const int64_t cy = 2 * py + ((child >> 1) & 1);
@@ -37,8 +40,12 @@ __global__ void expand_kernel(SphereGeometry s, const int64_t *coords, int64_t n
     child_coords[o * 3 + 2] = cz;
     child_boundary[o] = s.is_boundary(cx, cy, cz, level + 1);
     change += s.contribution(cx, cy, cz, level + 1);
+    if (wrong_delta)
+      wrong += s.misclassified_volume(cx, cy, cz, level + 1);
   }
   delta[i] = change;
+  if (wrong_delta)
+    wrong_delta[i] = wrong;
 }
 
 __global__ void occupancy_kernel(SphereGeometry s, const int64_t *coords, const int32_t *levels,
@@ -56,8 +63,10 @@ int blocks_for(int64_t n) { return static_cast<int>((n + kThreads - 1) / kThread
 
 AdaptiveSparseTensor voxelize_sphere_cuda(double radius, double target_accuracy_percent,
                                           std::array<double, 3> center, int64_t max_voxels,
-                                          uint32_t max_depth, double *achieved_accuracy_percent) {
+                                          uint32_t max_depth, double *achieved_accuracy_percent,
+                                          SphereErrorMetric metric) {
   sphere_detail::validate_args(radius, target_accuracy_percent, max_voxels, max_depth);
+  const bool geometric = metric == SphereErrorMetric::Geometric;
   if (!torch::cuda::is_available())
     throw std::runtime_error("voxelize_sphere_cuda: CUDA is not available");
 
@@ -82,6 +91,7 @@ AdaptiveSparseTensor voxelize_sphere_cuda(double radius, double target_accuracy_
   // incremental estimate is a cumulative sum over the parents' volume deltas, so the
   // first parent whose split reaches the target is found without a per-split loop.
   double volume = sphere.contribution(0, 0, 0, 0);
+  double wrong = geometric ? sphere.misclassified_volume(0, 0, 0, 0) : 0.0;
   int64_t count = 1;
   int level = 0;
   at::Tensor frontier = torch::zeros({0, 3}, i64);
@@ -91,6 +101,8 @@ AdaptiveSparseTensor voxelize_sphere_cuda(double radius, double target_accuracy_
     add_leaves(torch::zeros({1, 3}, i64), 0);
 
   double achieved = sphere.accuracy(volume);
+  if (geometric)
+    achieved = std::min(achieved, sphere.geometric_accuracy(wrong));
   while (achieved < target_accuracy_percent) {
     const int64_t n = frontier.size(0);
     const int64_t max_splits = n == 0 ? 0 : std::min<int64_t>(n, (max_voxels - count) / 7);
@@ -100,14 +112,21 @@ AdaptiveSparseTensor voxelize_sphere_cuda(double radius, double target_accuracy_
     auto child_coords = torch::empty({n * 8, 3}, i64);
     auto child_boundary = torch::empty({n * 8}, boolean);
     auto delta = torch::empty({n}, f64);
+    at::Tensor wrong_delta = geometric ? torch::empty({n}, f64) : at::Tensor();
     expand_kernel<<<blocks_for(n), kThreads, 0, stream>>>(
         sphere, frontier.data_ptr<int64_t>(), n, level, child_coords.data_ptr<int64_t>(),
-        child_boundary.data_ptr<bool>(), delta.data_ptr<double>());
+        child_boundary.data_ptr<bool>(), delta.data_ptr<double>(),
+        geometric ? wrong_delta.data_ptr<double>() : nullptr);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     const double exact = sphere.exact_volume();
     const auto estimate = delta.cumsum(0) + volume;
-    const auto accuracy = 100.0 * (1.0 - (estimate - exact).abs() / exact);
+    auto accuracy = 100.0 * (1.0 - (estimate - exact).abs() / exact);
+    at::Tensor wrong_estimate;
+    if (geometric) {
+      wrong_estimate = wrong_delta.cumsum(0) + wrong;
+      accuracy = torch::minimum(accuracy, 100.0 * (1.0 - wrong_estimate / exact));
+    }
     const auto reached = accuracy.slice(0, 0, max_splits) >= target_accuracy_percent;
     const bool any_reached = max_splits > 0 && reached.any().item<bool>();
 
@@ -118,6 +137,8 @@ AdaptiveSparseTensor voxelize_sphere_cuda(double radius, double target_accuracy_
       add_leaves(child_coords.index({~child_boundary}), level + 1);
       frontier = child_coords.index({child_boundary});
       volume = estimate[n - 1].item<double>();
+      if (geometric)
+        wrong = wrong_estimate[n - 1].item<double>();
       achieved = accuracy[n - 1].item<double>();
       count += 7 * n;
       ++level;
