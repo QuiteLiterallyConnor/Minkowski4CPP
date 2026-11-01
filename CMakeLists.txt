@@ -448,6 +448,7 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_gradients.cpp
         tests/adaptive/test_regression.cpp
         tests/adaptive/test_sphere.cpp
+        tests/adaptive/test_drop_empty.cpp
     )
 
     add_executable(adaptive_bench
