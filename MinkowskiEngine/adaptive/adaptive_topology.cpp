@@ -186,6 +186,15 @@ void parallel_blocks(int64_t n, const std::function<void(int64_t, int64_t)> &f) 
   for_blocks(n, f);
 }
 
+int parallel_block_count(int64_t n, int64_t work) {
+  return static_cast<int>(std::max<int64_t>(1, std::min<int64_t>(thread_count(work), n)));
+}
+
+void run_parallel_blocks(int64_t n, int blocks,
+                         const std::function<void(int, int64_t, int64_t)> &f) {
+  run_tasks(blocks, [&](int b) { f(b, n * b / blocks, n * (b + 1) / blocks); });
+}
+
 void sort_keys(std::vector<Key> &keys, std::vector<int64_t> &order) {
   order.clear();
   const int64_t n = static_cast<int64_t>(keys.size());
