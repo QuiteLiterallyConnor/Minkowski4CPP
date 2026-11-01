@@ -107,38 +107,64 @@ at::Tensor interpolate(const AdaptiveSparseTensor &input, const at::Tensor &poin
   const int64_t M = pts.size(0);
   const double *p = pts.data_ptr<double>();
 
+  // Points are split into contiguous blocks handled on separate threads; concatenating the
+  // blocks in order gives exactly the serial (point, then leaf) order.
+  struct Pairs {
+    std::vector<int64_t> pt_idx, leaf_idx;
+    std::vector<double> w;
+  };
+  if (M > 0 && t.size() > 0)
+    t.node_table(); // build the shared lookup table once, before the workers start
+  const int blocks = detail::parallel_block_count(
+      M, M * (mode == InterpMode::Nearest ? 1 : 8));
+  std::vector<Pairs> parts(static_cast<size_t>(blocks));
+  detail::run_parallel_blocks(M, blocks, [&](int b, int64_t m_begin, int64_t m_end) {
+    auto &pt_idx = parts[b].pt_idx, &leaf_idx = parts[b].leaf_idx;
+    auto &w = parts[b].w;
+    std::vector<std::pair<int64_t, double>> hits;
+    for (int64_t m = m_begin; m < m_end; ++m) {
+      DVec q{};
+      for (int d = 0; d < t.D; ++d)
+        q[d] = p[m * t.D + d];
+      const int64_t j = t.find_containing(q);
+      if (j < 0)
+        continue;
+      if (mode == InterpMode::Nearest) {
+        pt_idx.push_back(m);
+        leaf_idx.push_back(j);
+        w.push_back(1.0);
+        continue;
+      }
+      const DVec s = t.size_at(t.keys[j].level);
+      DVec lo{}, hi{};
+      for (int d = 0; d < t.D; ++d) {
+        lo[d] = q[d] - 0.5 * s[d];
+        hi[d] = q[d] + 0.5 * s[d];
+      }
+      hits.clear();
+      double total = 0.0;
+      t.for_each_overlap(lo, hi, [&](int64_t leaf, double ov) {
+        hits.emplace_back(leaf, ov);
+        total += ov;
+      });
+      for (auto &h : hits) {
+        pt_idx.push_back(m);
+        leaf_idx.push_back(h.first);
+        w.push_back(h.second / total);
+      }
+    }
+  });
   std::vector<int64_t> pt_idx, leaf_idx;
   std::vector<double> w;
-  std::vector<std::pair<int64_t, double>> hits;
-  for (int64_t m = 0; m < M; ++m) {
-    DVec q{};
-    for (int d = 0; d < t.D; ++d)
-      q[d] = p[m * t.D + d];
-    const int64_t j = t.find_containing(q);
-    if (j < 0)
-      continue;
-    if (mode == InterpMode::Nearest) {
-      pt_idx.push_back(m);
-      leaf_idx.push_back(j);
-      w.push_back(1.0);
-      continue;
-    }
-    const DVec s = t.size_at(t.keys[j].level);
-    DVec lo{}, hi{};
-    for (int d = 0; d < t.D; ++d) {
-      lo[d] = q[d] - 0.5 * s[d];
-      hi[d] = q[d] + 0.5 * s[d];
-    }
-    hits.clear();
-    double total = 0.0;
-    t.for_each_overlap(lo, hi, [&](int64_t leaf, double ov) {
-      hits.emplace_back(leaf, ov);
-      total += ov;
-    });
-    for (auto &h : hits) {
-      pt_idx.push_back(m);
-      leaf_idx.push_back(h.first);
-      w.push_back(h.second / total);
+  if (blocks == 1) {
+    pt_idx.swap(parts[0].pt_idx);
+    leaf_idx.swap(parts[0].leaf_idx);
+    w.swap(parts[0].w);
+  } else {
+    for (auto &part : parts) {
+      pt_idx.insert(pt_idx.end(), part.pt_idx.begin(), part.pt_idx.end());
+      leaf_idx.insert(leaf_idx.end(), part.leaf_idx.begin(), part.leaf_idx.end());
+      w.insert(w.end(), part.w.begin(), part.w.end());
     }
   }
 
