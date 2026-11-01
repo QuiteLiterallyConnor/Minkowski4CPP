@@ -23,10 +23,60 @@
  *  of the code.
  */
 #include "math_functions.hpp"
+
+#include <array>
+
 #include <torch/torch.h>
 
-// Implement CBLAS functions using PyTorch when MKL is not available
+// Implement the CBLAS GEMM entry points with LibTorch when MKL is not available.
+// Full BLAS semantics: row- or column-major storage, transposes and leading
+// dimensions; with beta == 0 the input contents of C are ignored.
 #ifndef USE_MKL
+namespace {
+
+// Strided view of a stored BLAS matrix with `rows` x `cols` elements.
+template <typename T>
+at::Tensor blas_matrix(const T *data, int rows, int cols, int ld,
+                       bool row_major) {
+  const std::array<int64_t, 2> sizes{rows, cols};
+  const std::array<int64_t, 2> strides =
+      row_major ? std::array<int64_t, 2>{ld, 1} : std::array<int64_t, 2>{1, ld};
+  return torch::from_blob(const_cast<T *>(data), sizes, strides,
+                          torch::TensorOptions().dtype(
+                              c10::CppTypeToScalarType<T>::value));
+}
+
+// C := alpha * op(A) * op(B) + beta * C, op(A): M x K, op(B): K x N, C: M x N.
+template <typename T>
+void torch_gemm(const CBLAS_ORDER Layout, const CBLAS_TRANSPOSE TransA,
+                const CBLAS_TRANSPOSE TransB, const int M, const int N,
+                const int K, const T alpha, const T *A, const int lda,
+                const T *B, const int ldb, const T beta, T *C, const int ldc) {
+  if (M <= 0 || N <= 0)
+    return;
+  const bool row_major = Layout == CblasRowMajor;
+  const bool trans_a = TransA != CblasNoTrans;
+  const bool trans_b = TransB != CblasNoTrans;
+  auto c = blas_matrix(C, M, N, ldc, row_major);
+  if (K <= 0 || alpha == T(0)) {
+    if (beta == T(0))
+      c.zero_();
+    else if (beta != T(1))
+      c.mul_(beta);
+    return;
+  }
+  auto a = blas_matrix(A, trans_a ? K : M, trans_a ? M : K, lda, row_major);
+  auto b = blas_matrix(B, trans_b ? N : K, trans_b ? K : N, ldb, row_major);
+  if (trans_a)
+    a = a.t();
+  if (trans_b)
+    b = b.t();
+  // addmm_ ignores the input of C when beta == 0 (no NaN/Inf propagation).
+  c.addmm_(a, b, beta, alpha);
+}
+
+} // namespace
+
 extern "C" {
 
 void cblas_sgemm(const CBLAS_ORDER Layout, const CBLAS_TRANSPOSE TransA,
@@ -34,25 +84,8 @@ void cblas_sgemm(const CBLAS_ORDER Layout, const CBLAS_TRANSPOSE TransA,
                  const int K, const float alpha, const float *A, const int lda,
                  const float *B, const int ldb, const float beta, float *C,
                  const int ldc) {
-  // Create tensors from raw pointers
-  auto A_tensor = torch::from_blob(const_cast<float*>(A), 
-                                    {TransA == CblasNoTrans ? M : K, TransA == CblasNoTrans ? K : M},
-                                    torch::kFloat32);
-  auto B_tensor = torch::from_blob(const_cast<float*>(B), 
-                                    {TransB == CblasNoTrans ? K : N, TransB == CblasNoTrans ? N : K},
-                                    torch::kFloat32);
-  auto C_tensor = torch::from_blob(C, {M, N}, torch::kFloat32);
-  
-  // Handle transpose
-  if (TransA != CblasNoTrans) A_tensor = A_tensor.t();
-  if (TransB != CblasNoTrans) B_tensor = B_tensor.t();
-  
-  // Perform: C = beta * C + alpha * A * B
-  if (beta == 0.0f) {
-    C_tensor.copy_(torch::matmul(A_tensor, B_tensor) * alpha);
-  } else {
-    C_tensor.mul_(beta).add_(torch::matmul(A_tensor, B_tensor), alpha);
-  }
+  torch_gemm<float>(Layout, TransA, TransB, M, N, K, alpha, A, lda, B, ldb,
+                    beta, C, ldc);
 }
 
 void cblas_dgemm(const CBLAS_ORDER Layout, const CBLAS_TRANSPOSE TransA,
@@ -60,25 +93,8 @@ void cblas_dgemm(const CBLAS_ORDER Layout, const CBLAS_TRANSPOSE TransA,
                  const int K, const double alpha, const double *A, const int lda,
                  const double *B, const int ldb, const double beta, double *C,
                  const int ldc) {
-  // Create tensors from raw pointers
-  auto A_tensor = torch::from_blob(const_cast<double*>(A), 
-                                    {TransA == CblasNoTrans ? M : K, TransA == CblasNoTrans ? K : M},
-                                    torch::kFloat64);
-  auto B_tensor = torch::from_blob(const_cast<double*>(B), 
-                                    {TransB == CblasNoTrans ? K : N, TransB == CblasNoTrans ? N : K},
-                                    torch::kFloat64);
-  auto C_tensor = torch::from_blob(C, {M, N}, torch::kFloat64);
-  
-  // Handle transpose
-  if (TransA != CblasNoTrans) A_tensor = A_tensor.t();
-  if (TransB != CblasNoTrans) B_tensor = B_tensor.t();
-  
-  // Perform: C = beta * C + alpha * A * B
-  if (beta == 0.0) {
-    C_tensor.copy_(torch::matmul(A_tensor, B_tensor) * alpha);
-  } else {
-    C_tensor.mul_(beta).add_(torch::matmul(A_tensor, B_tensor), alpha);
-  }
+  torch_gemm<double>(Layout, TransA, TransB, M, N, K, alpha, A, lda, B, ldb,
+                     beta, C, ldc);
 }
 
 void cblas_saxpy(const int N, const float alpha, const float *X,
@@ -165,7 +181,7 @@ void cpu_div<float>(const int n, const float *a, const float *b, float *y) {
 
 template <>
 void cpu_div<double>(const int n, const double *a, const double *b, double *y) {
-  vdMul(n, a, b, y);
+  vdDiv(n, a, b, y);
 }
 
 template <>
