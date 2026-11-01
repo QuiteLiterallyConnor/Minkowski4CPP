@@ -605,6 +605,35 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
     add_test(NAME gaussian_tests COMMAND gaussian_tests)
 endif()
 
+# ============================================================
+# ML representation study (uniform / adaptive / Gaussian / adaptive+Gaussian)
+# ============================================================
+
+option(MINK_BUILD_ML_EXPERIMENTS "Build the ML representation experiments" ON)
+if(MINK_BUILD_ML_EXPERIMENTS AND MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
+    add_executable(ml_representations
+        benchmarks/ml_representations.cpp
+    )
+    target_link_libraries(ml_representations PRIVATE minkowski_cpp)
+    target_include_directories(ml_representations PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+    )
+    if(MINK_TORCH_CXX_FLAGS)
+        target_compile_options(ml_representations PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+        )
+    endif()
+    # Smoke run: tiny dataset, one epoch per method (CPU unless CUDA is present).
+    add_test(NAME ml_representations_smoke
+        COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:ml_representations>
+                -DOUT=${CMAKE_CURRENT_BINARY_DIR}/ml_smoke
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/ml_representations_smoke.cmake)
+endif()
+
 # Windows resolves DLLs next to the executable, so without this the binaries
 # exit silently (0xC0000135) unless LibTorch's lib directory is on PATH.
 option(MINK_COPY_TORCH_DLLS "Copy LibTorch DLLs next to the built executables (Windows)" ON)
