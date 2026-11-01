@@ -411,6 +411,9 @@ endif()
 
 if(MINK_BUILD_TESTS)
 
+    enable_testing()
+    add_subdirectory(tests/utils)
+
     add_executable(train
         tests/train.cpp
     )
