@@ -75,8 +75,10 @@ measurements, not general performance guarantees.
 
 ## Scope and limitations
 
-This remains a partial Gaussian subsystem. There is not yet a
-Gaussian-to-sparse-voxel bridge or adaptive spatial index. Rendering
+This remains a partial Gaussian subsystem. `gaussian_adaptive.hpp` bridges
+Gaussians and adaptive sparse voxels (`gaussians_to_adaptive`,
+`adaptive_to_gaussians`, `refine_by_gaussian_density`, `find_leaves` as a
+spatial index); there is no bridge to the uniform `SparseTensor` yet. Rendering
 (`gaussian_render.hpp`) is a differentiable tile rasterizer. On CUDA it runs
 fused forward/backward kernels in `gaussian_raster_cuda.cu` (tile lists built
 with LibTorch sorts, one 16x16 block per tile, back-to-front backward pass that

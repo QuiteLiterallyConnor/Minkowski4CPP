@@ -492,6 +492,7 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         tests/gaussian/test_gaussian_tensor.cpp
         tests/gaussian/test_gaussian_ply.cpp
         tests/gaussian/test_gaussian_render.cpp
+        tests/gaussian/test_gaussian_adaptive.cpp
     )
 
     target_compile_definitions(gaussian_tests PRIVATE
@@ -551,6 +552,22 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         )
         if(MINK_TORCH_CXX_FLAGS)
             target_compile_options(gaussian_ply_bench PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+    endif()
+
+    if(MINK_BUILD_GAUSSIAN_BENCHMARKS AND MINKOWSKI_ENABLE_GAUSSIAN)
+        add_executable(gaussian_adaptive_bench
+            benchmarks/gaussian_adaptive_bench.cpp
+        )
+        target_link_libraries(gaussian_adaptive_bench PRIVATE minkowski_cpp)
+        target_include_directories(gaussian_adaptive_bench PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(gaussian_adaptive_bench PRIVATE
                 $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
             )
         endif()
