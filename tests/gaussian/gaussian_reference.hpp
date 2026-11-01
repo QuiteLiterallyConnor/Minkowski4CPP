@@ -31,11 +31,14 @@ struct Splats {
   }
 };
 
+// kernels selects the fused rasterizer of the device (CUDA kernels or the
+// multi-threaded CPU rasterizer); false selects the LibTorch reference path.
 inline RenderOutput render_splats(const Splats &s, const Camera &camera,
-                                  bool cuda_kernels, int64_t tile_size = 16) {
+                                  bool kernels, int64_t tile_size = 16) {
   RenderOptions options;
   options.background = s.background;
-  options.use_cuda_kernels = cuda_kernels;
+  options.use_cuda_kernels = kernels;
+  options.use_cpu_kernels = kernels;
   options.tile_size = tile_size;
   return minkowski::gaussian::render_gaussians(
       s.positions, s.rotations, s.scales, s.opacities, s.colors, camera,

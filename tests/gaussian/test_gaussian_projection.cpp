@@ -37,7 +37,9 @@ struct Path {
 };
 
 std::vector<Path> projection_paths() {
-  std::vector<Path> paths{{torch::Device(torch::kCPU), false, "cpu"}};
+  // CPU: the fused rasterizer (default) and the LibTorch reference path.
+  std::vector<Path> paths{{torch::Device(torch::kCPU), true, "cpu-kernels"},
+                          {torch::Device(torch::kCPU), false, "cpu-libtorch"}};
 #ifdef USE_CUDA
   if (at::cuda::is_available()) {
     paths.push_back({torch::Device(torch::kCUDA, 0), true, "cuda-kernels"});
