@@ -1,6 +1,7 @@
 #include "sphere.hpp"
 #include "sphere_geometry.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <deque>
 #include <stdexcept>
@@ -49,6 +50,9 @@ bool occupied(const SphereGeometry &s, const Cell &c) {
 double contribution(const SphereGeometry &s, const Cell &c) {
   return s.contribution(c[0], c[1], c[2], static_cast<int>(c[3]));
 }
+double misclassified(const SphereGeometry &s, const Cell &c) {
+  return s.misclassified_volume(c[0], c[1], c[2], static_cast<int>(c[3]));
+}
 
 Cell child_of(const Cell &parent, int child) {
   return {2 * parent[0] + (child & 1), 2 * parent[1] + ((child >> 1) & 1),
@@ -59,9 +63,15 @@ Cell child_of(const Cell &parent, int child) {
 
 AdaptiveSparseTensor voxelize_sphere(double radius, double target_accuracy_percent,
                                      std::array<double, 3> center, int64_t max_voxels,
-                                     uint32_t max_depth, double *achieved_accuracy_percent) {
+                                     uint32_t max_depth, double *achieved_accuracy_percent,
+                                     SphereErrorMetric metric) {
   sphere_detail::validate_args(radius, target_accuracy_percent, max_voxels, max_depth);
   const SphereGeometry sphere{radius};
+  const bool geometric = metric == SphereErrorMetric::Geometric;
+  const auto accuracy = [&](double vol, double wrong_vol) {
+    const double a = sphere.accuracy(vol);
+    return geometric ? std::min(a, sphere.geometric_accuracy(wrong_vol)) : a;
+  };
 
   // Refine in FIFO order (all cells of one level before the next) tracking the
   // estimate incrementally; stop at the first leaf count that reaches the target.
@@ -69,13 +79,14 @@ AdaptiveSparseTensor voxelize_sphere(double radius, double target_accuracy_perce
   std::deque<Cell> boundary;
   const Cell root{0, 0, 0, 0};
   double volume = contribution(sphere, root);
+  double wrong = geometric ? misclassified(sphere, root) : 0.0; // misclassified volume
   int64_t count = 1;
   if (is_boundary(sphere, root))
     boundary.push_back(root);
   else
     leaves.push_back(root);
 
-  double achieved = sphere.accuracy(volume);
+  double achieved = accuracy(volume, wrong);
   while (achieved < target_accuracy_percent) {
     if (boundary.empty() || count + 7 > max_voxels ||
         static_cast<uint32_t>(boundary.front()[3]) >= max_depth)
@@ -83,16 +94,20 @@ AdaptiveSparseTensor voxelize_sphere(double radius, double target_accuracy_perce
     const Cell parent = boundary.front();
     boundary.pop_front();
     volume -= contribution(sphere, parent);
+    if (geometric)
+      wrong -= misclassified(sphere, parent);
     count += 7;
     for (int child = 0; child < 8; ++child) {
       const Cell c = child_of(parent, child);
       volume += contribution(sphere, c);
+      if (geometric)
+        wrong += misclassified(sphere, c);
       if (is_boundary(sphere, c))
         boundary.push_back(c);
       else
         leaves.push_back(c);
     }
-    achieved = sphere.accuracy(volume);
+    achieved = accuracy(volume, wrong);
   }
   leaves.insert(leaves.end(), boundary.begin(), boundary.end());
   if (achieved_accuracy_percent)
@@ -125,7 +140,7 @@ double sphere_volume_estimate(const AdaptiveSparseTensor &sphere) {
 
 #ifdef CPU_ONLY
 AdaptiveSparseTensor voxelize_sphere_cuda(double, double, std::array<double, 3>, int64_t,
-                                          uint32_t, double *) {
+                                          uint32_t, double *, SphereErrorMetric) {
   throw std::runtime_error("voxelize_sphere_cuda: CUDA not available in CPU_ONLY build");
 }
 #endif

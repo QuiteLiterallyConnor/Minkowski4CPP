@@ -5,8 +5,11 @@
 #include "gaussian_cuda.hpp"
 #endif
 
+#include <ATen/Parallel.h>
+
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace minkowski {
 namespace gaussian {
@@ -185,7 +188,6 @@ struct RasterFunction : public torch::autograd::Function<RasterFunction> {
   }
 };
 
-#ifdef USE_CUDA
 // Groups (tile, Gaussian) pairs by tile; Gaussians are already depth sorted, so
 // sorting by tile*M + row keeps depth order inside every tile.
 void build_tile_lists(const at::Tensor &bounds, int64_t rows, int64_t cols,
@@ -218,15 +220,201 @@ void build_tile_lists(const at::Tensor &bounds, int64_t rows, int64_t cols,
   ranges = at::stack({ends - per_tile, ends}, 1).to(at::kInt).contiguous();
 }
 
-struct CudaRasterFunction
-    : public torch::autograd::Function<CudaRasterFunction> {
+// ---------------------------------------------------------------------------
+// Fused CPU rasterizer: the CUDA kernels' algorithm with one task per tile
+// (at::parallel_for) and a per-pixel loop over the tile's depth-sorted list.
+// Per-pixel early stop at T < 1e-4 as on CUDA. The backward writes each
+// (tile, Gaussian) pair's gradient into its own row of a [pairs, 10] buffer
+// (no races, no atomics) and reduces with one index_add_, so it is
+// deterministic.
+
+struct CpuTile {
+  int64_t y0, y1, x0, x1, begin, end;
+};
+
+CpuTile cpu_tile(const int32_t *ranges, int64_t tile_index, int64_t cols,
+                 int64_t tile, int64_t height, int64_t width) {
+  const int64_t row = tile_index / cols, col = tile_index % cols;
+  CpuTile t;
+  t.y0 = row * tile;
+  t.y1 = std::min(t.y0 + tile, height);
+  t.x0 = col * tile;
+  t.x1 = std::min(t.x0 + tile, width);
+  t.begin = ranges[2 * tile_index];
+  t.end = ranges[2 * tile_index + 1];
+  return t;
+}
+
+// Alpha of a pixel/Gaussian pair, or -1 if it does not contribute.
+inline float cpu_alpha(const float *a, float px, float py, float *dx,
+                       float *dy, float *g) {
+  *dx = px - a[0];
+  *dy = py - a[1];
+  const float power =
+      -0.5f * (a[2] * *dx * *dx + a[4] * *dy * *dy) - a[3] * *dx * *dy;
+  if (power > 0.0f)
+    return -1.0f;
+  *g = std::exp(power);
+  const float alpha = std::min(kMaxAlpha, a[5] * *g);
+  return alpha < kMinAlpha ? -1.0f : alpha;
+}
+
+// Copies the tile's Gaussians into a contiguous [count, 10] buffer.
+void gather_tile(const float *attrs, const int32_t *ids, const CpuTile &t,
+                 std::vector<float> &local) {
+  const int64_t count = t.end - t.begin;
+  local.resize(static_cast<size_t>(count * kAttributeCount));
+  for (int64_t k = 0; k < count; ++k)
+    std::copy_n(attrs + static_cast<int64_t>(ids[t.begin + k]) * kAttributeCount,
+                kAttributeCount, local.data() + k * kAttributeCount);
+}
+
+void rasterize_forward_cpu(const at::Tensor &attrs, const at::Tensor &ids,
+                           const at::Tensor &ranges,
+                           const at::Tensor &background, int64_t height,
+                           int64_t width, int64_t tile, at::Tensor &out,
+                           at::Tensor &final_t, at::Tensor &last_index) {
+  const int64_t rows = (height + tile - 1) / tile;
+  const int64_t cols = (width + tile - 1) / tile;
+  const float *attr = attrs.data_ptr<float>();
+  const int32_t *id = ids.data_ptr<int32_t>();
+  const int32_t *range = ranges.data_ptr<int32_t>();
+  const float *bg = background.data_ptr<float>();
+  float *o = out.data_ptr<float>();
+  float *ft = final_t.data_ptr<float>();
+  int32_t *li = last_index.data_ptr<int32_t>();
+  at::parallel_for(0, rows * cols, 1, [&](int64_t first, int64_t last_tile) {
+    std::vector<float> local;
+    for (int64_t ti = first; ti < last_tile; ++ti) {
+      const auto t = cpu_tile(range, ti, cols, tile, height, width);
+      gather_tile(attr, id, t, local);
+      const int64_t count = t.end - t.begin;
+      for (int64_t y = t.y0; y < t.y1; ++y)
+        for (int64_t x = t.x0; x < t.x1; ++x) {
+          const float px = static_cast<float>(x) + 0.5f;
+          const float py = static_cast<float>(y) + 0.5f;
+          float T = 1.0f, c[4] = {0, 0, 0, 0};
+          int32_t last = 0;
+          for (int64_t k = 0; k < count; ++k) {
+            const float *a = local.data() + k * kAttributeCount;
+            float dx, dy, g;
+            const float alpha = cpu_alpha(a, px, py, &dx, &dy, &g);
+            if (alpha < 0.0f)
+              continue;
+            const float next = T * (1.0f - alpha);
+            if (next < kStopTransmittance)
+              break;
+            const float w = alpha * T;
+            c[0] += a[7] * w;
+            c[1] += a[8] * w;
+            c[2] += a[9] * w;
+            c[3] += a[6] * w;
+            T = next;
+            last = static_cast<int32_t>(k + 1);
+          }
+          const int64_t pixel = y * width + x;
+          float *dst = o + pixel * 5;
+          dst[0] = c[0] + T * bg[0];
+          dst[1] = c[1] + T * bg[1];
+          dst[2] = c[2] + T * bg[2];
+          dst[3] = c[3];
+          dst[4] = 1.0f - T;
+          ft[pixel] = T;
+          li[pixel] = last;
+        }
+    }
+  });
+}
+
+// grad_pairs [pairs, 10] must be zero-initialized.
+void rasterize_backward_cpu(const at::Tensor &attrs, const at::Tensor &ids,
+                            const at::Tensor &ranges,
+                            const at::Tensor &background,
+                            const at::Tensor &grad_out,
+                            const at::Tensor &final_t,
+                            const at::Tensor &last_index, int64_t height,
+                            int64_t width, int64_t tile,
+                            at::Tensor &grad_pairs) {
+  const int64_t rows = (height + tile - 1) / tile;
+  const int64_t cols = (width + tile - 1) / tile;
+  const float *attr = attrs.data_ptr<float>();
+  const int32_t *id = ids.data_ptr<int32_t>();
+  const int32_t *range = ranges.data_ptr<int32_t>();
+  const float *bg = background.data_ptr<float>();
+  const float *gout = grad_out.data_ptr<float>();
+  const float *ft = final_t.data_ptr<float>();
+  const int32_t *li = last_index.data_ptr<int32_t>();
+  float *gp = grad_pairs.data_ptr<float>();
+  at::parallel_for(0, rows * cols, 1, [&](int64_t first, int64_t last_tile) {
+    std::vector<float> local;
+    for (int64_t ti = first; ti < last_tile; ++ti) {
+      const auto t = cpu_tile(range, ti, cols, tile, height, width);
+      if (t.end == t.begin)
+        continue;
+      gather_tile(attr, id, t, local);
+      float *tile_grad = gp + t.begin * kAttributeCount;
+      for (int64_t y = t.y0; y < t.y1; ++y)
+        for (int64_t x = t.x0; x < t.x1; ++x) {
+          const int64_t pixel = y * width + x;
+          const float px = static_cast<float>(x) + 0.5f;
+          const float py = static_cast<float>(y) + 0.5f;
+          const float *go = gout + pixel * 5;
+          const float T_final = ft[pixel];
+          float T = T_final;
+          const float bg_dot = bg[0] * go[0] + bg[1] * go[1] + bg[2] * go[2];
+          float acc[4] = {0, 0, 0, 0}, last_color[4] = {0, 0, 0, 0};
+          float last_alpha = 0.0f;
+          for (int64_t k = li[pixel] - 1; k >= 0; --k) {
+            const float *a = local.data() + k * kAttributeCount;
+            float dx, dy, g;
+            const float alpha = cpu_alpha(a, px, py, &dx, &dy, &g);
+            if (alpha < 0.0f)
+              continue;
+            T = T / (1.0f - alpha);
+            const float channel[4] = {a[7], a[8], a[9], a[6]};
+            const float weight = alpha * T;
+            float dalpha = 0.0f;
+            for (int c = 0; c < 4; ++c) {
+              acc[c] = last_alpha * last_color[c] + (1.0f - last_alpha) * acc[c];
+              last_color[c] = channel[c];
+              dalpha += (channel[c] - acc[c]) * go[c];
+            }
+            dalpha *= T;
+            const float inv = T_final / (1.0f - alpha);
+            dalpha += go[4] * inv - bg_dot * inv;
+            last_alpha = alpha;
+
+            float *v = tile_grad + k * kAttributeCount;
+            v[6] += weight * go[3];
+            v[7] += weight * go[0];
+            v[8] += weight * go[1];
+            v[9] += weight * go[2];
+            // Only the unclamped branch passes gradient through
+            // min(alpha, 0.99).
+            const float unclamped = a[5] * g;
+            if (unclamped <= kMaxAlpha) {
+              const float dpower = unclamped * dalpha;
+              v[5] += g * dalpha;
+              v[0] += dpower * (a[2] * dx + a[3] * dy);
+              v[1] += dpower * (a[4] * dy + a[3] * dx);
+              v[2] += -0.5f * dx * dx * dpower;
+              v[3] += -dx * dy * dpower;
+              v[4] += -0.5f * dy * dy * dpower;
+            }
+          }
+        }
+    }
+  });
+}
+
+struct KernelRasterFunction
+    : public torch::autograd::Function<KernelRasterFunction> {
   static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                             const at::Tensor &attrs,
                             const at::Tensor &background,
                             const at::Tensor &bounds, const at::Tensor &meta) {
     const auto m = meta.accessor<int64_t, 1>();
-    const int64_t height = m[0], width = m[1];
-    const int64_t tile = detail::kRasterTileSize;
+    const int64_t height = m[0], width = m[1], tile = m[2];
     const int64_t rows = (height + tile - 1) / tile;
     const int64_t cols = (width + tile - 1) / tile;
     at::Tensor ids, ranges;
@@ -237,8 +425,14 @@ struct CudaRasterFunction
     auto final_t = at::empty({height, width}, attrs.options());
     auto last_index =
         at::empty({height, width}, attrs.options().dtype(at::kInt));
-    detail::rasterize_forward_cuda(packed, ids, ranges, bg, height, width, out,
-                                   final_t, last_index);
+#ifdef USE_CUDA
+    if (attrs.is_cuda())
+      detail::rasterize_forward_cuda(packed, ids, ranges, bg, height, width,
+                                     out, final_t, last_index);
+    else
+#endif
+      rasterize_forward_cpu(packed, ids, ranges, bg, height, width, tile, out,
+                            final_t, last_index);
     ctx->save_for_backward(
         {packed, bg, ids, ranges, final_t, last_index, meta});
     return out;
@@ -251,16 +445,33 @@ struct CudaRasterFunction
     const auto m = saved[6].accessor<int64_t, 1>();
     const auto grad_out = grad_outputs[0].contiguous();
     auto grad_attrs = at::zeros_like(saved[0]);
-    detail::rasterize_backward_cuda(saved[0], saved[2], saved[3], saved[1],
-                                    grad_out, saved[4], saved[5], m[0], m[1],
-                                    grad_attrs);
+#ifdef USE_CUDA
+    if (saved[0].is_cuda())
+      detail::rasterize_backward_cuda(saved[0], saved[2], saved[3], saved[1],
+                                      grad_out, saved[4], saved[5], m[0], m[1],
+                                      grad_attrs);
+    else
+#endif
+    {
+      const auto &ids = saved[2];
+      const int64_t pairs = saved[3].numel() > 0
+                                ? saved[3].select(1, 1).max().item<int64_t>()
+                                : 0;
+      if (pairs > 0) {
+        auto grad_pairs = at::zeros({pairs, kAttributeCount}, saved[0].options());
+        rasterize_backward_cpu(saved[0], ids, saved[3], saved[1], grad_out,
+                               saved[4], saved[5], m[0], m[1], m[2],
+                               grad_pairs);
+        grad_attrs.index_add_(0, ids.slice(0, 0, pairs).to(at::kLong),
+                              grad_pairs);
+      }
+    }
     const auto grad_background =
         (saved[4].unsqueeze(-1) * grad_out.slice(2, 0, 3))
             .sum(at::IntArrayRef{0, 1});
     return {grad_attrs, grad_background, at::Tensor(), at::Tensor()};
   }
 };
-#endif
 
 } // namespace
 
@@ -298,8 +509,13 @@ RenderOutput render_gaussians(const at::Tensor &positions,
 #else
   const bool use_cuda_raster = false;
 #endif
+  const bool use_cpu_raster = options.use_cpu_kernels && device.is_cpu();
+#ifdef USE_CUDA
   const int64_t tile_size =
-      use_cuda_raster ? 16 : options.tile_size;
+      use_cuda_raster ? detail::kRasterTileSize : options.tile_size;
+#else
+  const int64_t tile_size = options.tile_size;
+#endif
   const auto float_options = at::TensorOptions().dtype(at::kFloat).device(device);
   const int64_t width = camera.width, height = camera.height;
   const auto world_to_camera = camera.world_to_camera.to(float_options);
@@ -409,13 +625,10 @@ RenderOutput render_gaussians(const at::Tensor &positions,
       std::vector<int64_t>{height, width, tile_size, options.chunk_size},
       at::kLong);
 
-#ifdef USE_CUDA
-  const auto out = use_cuda_raster
-                       ? CudaRasterFunction::apply(attrs, background, bounds, meta)
-                       : RasterFunction::apply(attrs, background, bounds, meta);
-#else
-  const auto out = RasterFunction::apply(attrs, background, bounds, meta);
-#endif
+  const auto out =
+      use_cuda_raster || use_cpu_raster
+          ? KernelRasterFunction::apply(attrs, background, bounds, meta)
+          : RasterFunction::apply(attrs, background, bounds, meta);
   RenderOutput result;
   result.image = out.slice(2, 0, 3);
   result.depth = out.select(2, 3);
