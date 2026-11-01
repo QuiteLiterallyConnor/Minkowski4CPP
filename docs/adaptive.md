@@ -92,7 +92,10 @@ t.refine_if([](int64_t, const std::array<double, 4>& lo,
 ```
 
 Topology decisions are not differentiable. Feature computations are built
-from torch operations and support autograd.
+from torch operations and support autograd: `revoxelize_from_points` is
+differentiable with respect to the point features given to `from_points`
+(detach them first to opt out), and empty tensors or queries that hit no leaf
+return zeros that stay connected to the graph, so `backward()` still runs.
 
 ## Mixed-resolution convolution
 
