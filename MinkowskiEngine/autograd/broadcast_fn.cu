@@ -1,4 +1,5 @@
 #include "broadcast_fn.hpp"
+#include "manager_holder.hpp"
 
 namespace minkowski {
 
@@ -61,7 +62,7 @@ at::Tensor BroadcastFunction::forward(
   ctx->saved_data["glob_key_str_id"] = glob_key->get_key().second;
   ctx->saved_data["in_key_coord_size"] = static_cast<int64_t>(in_key->get_coordinate_size());
   ctx->saved_data["glob_key_coord_size"] = static_cast<int64_t>(glob_key->get_coordinate_size());
-  ctx->saved_data["manager_ptr"] = reinterpret_cast<int64_t>(manager.get());
+  ctx->saved_data["manager"] = autograd_detail::pack_manager(manager);
 
   return out_feat;
 }
@@ -83,8 +84,9 @@ torch::autograd::variable_list BroadcastFunction::backward(
     {unpack_stride(ctx->saved_data["glob_key_stride"]),
      ctx->saved_data["glob_key_str_id"].toStringRef()});
 
-  auto *manager = reinterpret_cast<CoordinateManager *>(
-      ctx->saved_data["manager_ptr"].toInt());
+  const auto manager_ref =
+      autograd_detail::unpack_manager(ctx->saved_data["manager"]);
+  auto *manager = manager_ref.get();
 
   at::Tensor grad_out_feat = grad_outputs[0].contiguous();
   at::Tensor grad_in_feat, grad_in_feat_glob;
