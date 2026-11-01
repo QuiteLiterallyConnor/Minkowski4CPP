@@ -646,7 +646,7 @@ Everything lives in `minkowski::gaussian`; include `MinkowskiEngine/minkowski.hp
 | `GaussianTrainer` | 3DGS-style training: L1 + SSIM loss, per-parameter Adam, position LR decay, SH degree growth, gradient-driven densification (clone/split), pruning and periodic opacity reset. |
 | `save_gaussian_ply` / `load_gaussian_model_ply` | Write and read standard 3DGS PLYs including SH (round-trips raw parameters). |
 
-Not implemented yet: voxel bridges and adaptive indexing. Projection and SH evaluation still run as LibTorch ops (differentiated by autograd); only tile compositing is fused. The SH decode of compressed PLYs follows the SuperSplat layout from memory and has not been verified against reference output. See the [Gaussian notes](MinkowskiEngine/gaussian/README.md).
+Not implemented yet: voxel bridges and adaptive indexing. Projection and SH evaluation still run as LibTorch ops (differentiated by autograd); only tile compositing is fused. The compressed-PLY decode, SH bands included, is verified against the uncompressed export of the same scene (`test_gaussian_compressed_ply.cpp`). See the [Gaussian notes](MinkowskiEngine/gaussian/README.md).
 
 ### Gaussian rendering and training
 
