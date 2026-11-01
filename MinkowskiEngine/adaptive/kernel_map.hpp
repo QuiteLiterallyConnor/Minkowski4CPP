@@ -5,6 +5,8 @@
 
 #include <array>
 #include <memory>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 namespace minkowski {
@@ -38,9 +40,34 @@ struct AdaptiveKernelMap {
   int64_t num_kernels = 0;
 };
 
+// Copies of one kernel map's index/weight tensors on the devices and dtypes it was applied
+// with, so repeated convolutions upload them once. Shared by every copy of a cache entry and
+// freed with it (KernelMapCache::clear() or eviction releases the device memory).
+class KernelMapDeviceCache {
+public:
+  struct Arrays {
+    at::Tensor in_index;  // [P] int64 on `device`
+    at::Tensor out_index; // [P] int64 on `device`
+    at::Tensor weight;    // [P] `dtype` on `device`, undefined if not requested
+  };
+  // in/out indices on `device`, and the weights as `dtype` if `with_weight`.
+  Arrays get(const AdaptiveKernelMap &map, const at::Device &device, at::ScalarType dtype,
+             bool with_weight);
+
+private:
+  struct Slot {
+    at::Device device{at::kCPU};
+    at::Tensor in_index, out_index;
+    std::vector<std::pair<at::ScalarType, at::Tensor>> weights;
+  };
+  std::mutex mutex_;
+  std::vector<Slot> slots_;
+};
+
 struct KernelMapEntry {
   AdaptiveKernelMap map;
   std::shared_ptr<const detail::Topology> out_topology;
+  std::shared_ptr<KernelMapDeviceCache> device = std::make_shared<KernelMapDeviceCache>();
 };
 
 // Kernel slot of an offset in {-r..r}^D, r = (kernel_size-1)/2, first dimension slowest.

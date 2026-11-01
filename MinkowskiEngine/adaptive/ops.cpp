@@ -17,28 +17,35 @@ void check_weight(const at::Tensor &weight, const AdaptiveKernelMap &m, int64_t 
 }
 
 // Gather -> (optional per-pair weight) -> GEMM per kernel slot -> scatter-add.
-// `from`/`to` select the direction so the transposed convolution reuses the map.
-at::Tensor apply_map(const at::Tensor &x, const at::Tensor &weight, const AdaptiveKernelMap &m,
-                     const at::Tensor &from, const at::Tensor &to, int64_t n_out,
-                     bool weighted) {
-  const auto dev = x.device();
+// `transpose` swaps the direction so the transposed convolution reuses the map.
+// The map's index/weight arrays come from the entry's device cache (uploaded once per
+// device/dtype). One gather, one weight multiply and one scatter-add cover all kernel slots;
+// only the GEMM runs per slot, on row slices of the gathered features. The pairs are sorted by
+// slot, so the scatter-add sees the same rows in the same order as one scatter per slot did.
+at::Tensor apply_map(const at::Tensor &x, const at::Tensor &weight, const KernelMapEntry &entry,
+                     bool transpose, int64_t n_out, bool weighted) {
+  const AdaptiveKernelMap &m = entry.map;
   const int64_t cout = weight.size(2);
-  auto from_d = from.to(dev);
-  auto to_d = to.to(dev);
-  at::Tensor w_d;
-  if (weighted)
-    w_d = m.weight.to(dev).to(x.scalar_type());
+  auto arrays = entry.device->get(m, x.device(), x.scalar_type(), weighted);
+  const at::Tensor &from_d = transpose ? arrays.out_index : arrays.in_index;
+  const at::Tensor &to_d = transpose ? arrays.in_index : arrays.out_index;
   auto wt = weight.to(x.scalar_type());
   auto y = torch::zeros({n_out, cout}, x.options());
+  auto xs = x.index_select(0, from_d);
+  if (weighted)
+    xs = xs * arrays.weight.unsqueeze(1);
+  std::vector<at::Tensor> parts;
+  parts.reserve(static_cast<size_t>(m.num_kernels));
   for (int64_t k = 0; k < m.num_kernels; ++k) {
     const int64_t b = m.kernel_offsets[k], e = m.kernel_offsets[k + 1];
-    if (b == e)
-      continue;
-    auto xs = x.index_select(0, from_d.slice(0, b, e));
-    if (weighted)
-      xs = xs * w_d.slice(0, b, e).unsqueeze(1);
-    y.index_add_(0, to_d.slice(0, b, e), xs.matmul(wt[k]));
+    if (b != e)
+      parts.push_back(xs.slice(0, b, e).matmul(wt[k]));
   }
+  // No pairs (e.g. an empty input): a zero-row product keeps y connected to x and weight, so
+  // backward() on an empty batch yields zero gradients instead of an error.
+  if (parts.empty())
+    parts.push_back(xs.matmul(wt[0]));
+  y.index_add_(0, to_d, parts.size() == 1 ? parts[0] : torch::cat(parts, 0));
   return y;
 }
 
@@ -49,9 +56,8 @@ AdaptiveSparseTensor adaptive_convolution(const AdaptiveSparseTensor &input,
                                           const AdaptiveKernelConfig &config) {
   auto entry = KernelMapCache::instance().get_or_build(input, config);
   check_weight(weight, entry.map, input.channels());
-  auto y = apply_map(input.features(), weight, entry.map, entry.map.in_index,
-                     entry.map.out_index, entry.out_topology->size(),
-                     config.mode != AdaptiveConvMode::CenterSampled);
+  auto y = apply_map(input.features(), weight, entry, /*transpose=*/false,
+                     entry.out_topology->size(), config.mode != AdaptiveConvMode::CenterSampled);
   return AdaptiveSparseTensor::from_topology(entry.out_topology, y);
 }
 
@@ -65,8 +71,7 @@ AdaptiveSparseTensor adaptive_convolution_transpose(const AdaptiveSparseTensor &
     throw std::invalid_argument(
         "transposed convolution input does not match the forward convolution output topology");
   check_weight(weight, entry.map, input.channels());
-  auto y = apply_map(input.features(), weight, entry.map, entry.map.out_index,
-                     entry.map.in_index, reference.size(),
+  auto y = apply_map(input.features(), weight, entry, /*transpose=*/true, reference.size(),
                      config.mode != AdaptiveConvMode::CenterSampled);
   return AdaptiveSparseTensor::from_topology(reference.topology(), y);
 }

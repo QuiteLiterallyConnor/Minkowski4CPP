@@ -144,6 +144,37 @@ using CacheKey = std::tuple<uint64_t, int, int, int>;
 
 } // namespace
 
+KernelMapDeviceCache::Arrays KernelMapDeviceCache::get(const AdaptiveKernelMap &map,
+                                                       const at::Device &device,
+                                                       at::ScalarType dtype, bool with_weight) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Slot *slot = nullptr;
+  for (auto &s : slots_)
+    if (s.device == device)
+      slot = &s;
+  if (!slot) {
+    Slot s;
+    s.device = device;
+    // One upload per index array; `to` is a no-op for host maps used on the CPU.
+    s.in_index = map.in_index.to(device);
+    s.out_index = map.out_index.to(device);
+    slots_.push_back(std::move(s));
+    slot = &slots_.back();
+  }
+  Arrays a{slot->in_index, slot->out_index, at::Tensor()};
+  if (with_weight) {
+    for (const auto &w : slot->weights)
+      if (w.first == dtype)
+        a.weight = w.second;
+    if (!a.weight.defined()) {
+      // Same conversion order as before caching (move, then cast) so values are unchanged.
+      a.weight = map.weight.to(device).to(dtype);
+      slot->weights.emplace_back(dtype, a.weight);
+    }
+  }
+  return a;
+}
+
 struct KernelMapCache::Impl {
   mutable std::mutex mutex;
   std::map<CacheKey, KernelMapEntry> entries;
