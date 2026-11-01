@@ -1,5 +1,6 @@
 // Geometry tests: keys, hashing, physical bounds, parent/child relations, config validation.
 #include <array>
+#include <limits>
 #include <unordered_set>
 
 #include "MinkowskiEngine/adaptive/adaptive.hpp"
@@ -203,6 +204,91 @@ TEST(config_rejects_nonpositive_and_unsupported_depth) {
     c.max_depth = AdaptiveVoxelConfig::kMaxSupportedDepth + 1;
     c.min_voxel_size = {};
     CHECK_THROWS(c.validate());
+}
+
+namespace {
+
+AdaptiveVoxelConfig cube_config(uint32_t depth) {
+    AdaptiveVoxelConfig c;
+    c.base_voxel_size = {8.0, 8.0, 8.0};
+    c.max_depth = depth;
+    return c;
+}
+
+AdaptiveSparseTensor one_leaf(int64_t x, int32_t level, uint32_t depth) {
+    auto c = torch::tensor({{x, int64_t(0), int64_t(0)}}, torch::kInt64);
+    auto l = torch::tensor({level}, torch::kInt32);
+    return AdaptiveSparseTensor::from_voxels(c, l, torch::ones({1, 1}, torch::kFloat64),
+                                             cube_config(depth));
+}
+
+}  // namespace
+
+// A level-l coordinate c covers finest-level coordinates c * 2^(max_depth - l); they must stay
+// below 2^52 in magnitude so 2*c+bit cannot overflow and bounds/centres are exact doubles.
+TEST(topology_rejects_coordinates_outside_the_exact_range) {
+    const int64_t lim0 = int64_t(1) << 49;  // level 0 with max_depth 3
+    CHECK_EQ(one_leaf(lim0 - 1, 0, 3).size(), int64_t(1));
+    CHECK_EQ(one_leaf(-lim0, 0, 3).size(), int64_t(1));
+    CHECK_THROWS(one_leaf(lim0, 0, 3));
+    CHECK_THROWS(one_leaf(-lim0 - 1, 0, 3));
+
+    const int64_t lim3 = int64_t(1) << 52;  // finest level
+    CHECK_EQ(one_leaf(lim3 - 1, 3, 3).size(), int64_t(1));
+    CHECK_THROWS(one_leaf(lim3, 3, 3));
+
+    // Far outside: 2*c would overflow int64 on refinement.
+    CHECK_THROWS(one_leaf(int64_t(1) << 62, 0, 3));
+    CHECK_THROWS(one_leaf(std::numeric_limits<int64_t>::min(), 0, 3));
+    CHECK_THROWS(one_leaf(std::numeric_limits<int64_t>::max(), 3, 3));
+
+    // At the deepest supported hierarchy level 0 keeps 2^22 cells per side and direction.
+    const uint32_t deepest = AdaptiveVoxelConfig::kMaxSupportedDepth;
+    const int64_t lim_deep = int64_t(1) << (52 - deepest);
+    CHECK_EQ(one_leaf(lim_deep - 1, 0, deepest).size(), int64_t(1));
+    CHECK_THROWS(one_leaf(lim_deep, 0, deepest));
+}
+
+TEST(topology_rejects_out_of_range_coordinates_in_any_dimension) {
+    AdaptiveVoxelConfig cfg;
+    cfg.base_voxel_size = {1.0, 1.0};
+    cfg.max_depth = 2;
+    const int64_t lim = int64_t(1) << 50;  // level 0, max_depth 2
+    auto make = [&](int64_t y) {
+        return AdaptiveSparseTensor::from_voxels(
+            torch::tensor({{int64_t(0), y}, {int64_t(1), int64_t(0)}}, torch::kInt64),
+            torch::tensor({0, 0}, torch::kInt32), torch::ones({2, 1}, torch::kFloat64), cfg);
+    };
+    CHECK_EQ(make(lim - 1).size(), int64_t(2));
+    CHECK_THROWS(make(lim));
+    CHECK_THROWS(make(-lim - 1));
+}
+
+TEST(topology_from_points_rejects_points_outside_the_exact_range) {
+    auto cfg = cube_config(3);
+    // 1e17 / 8 = 1.25e16 > 2^49 cells at level 0.
+    auto far = torch::tensor({{1e17, 0.0, 0.0}}, torch::kFloat64);
+    CHECK_THROWS(AdaptiveSparseTensor::from_points(far, torch::ones({1, 1}, torch::kFloat64), cfg));
+    auto near = torch::tensor({{1e15, 0.0, 0.0}}, torch::kFloat64);
+    CHECK_EQ(AdaptiveSparseTensor::from_points(near, torch::ones({1, 1}, torch::kFloat64), cfg).size(),
+             int64_t(1));
+}
+
+TEST(topology_refinement_at_the_coordinate_limit_stays_exact) {
+    const int64_t c0 = (int64_t(1) << 49) - 1;
+    auto t = one_leaf(c0, 0, 3);
+    t.refine(AxisAlignedRegion::everything(3), 3);
+    CHECK_EQ(t.size(), int64_t(512));
+    CHECK(!t.has_overlapping_leaves());
+    // The last child of the last child... has finest coordinate 2^52 - 1.
+    const int64_t cmax = (int64_t(1) << 52) - 1;
+    const int64_t j = t.index_of({cmax, 7, 7}, 3);
+    CHECK(j >= 0);
+    // Its centre is an exact double and locates back to the same leaf.
+    auto centre = t.centers()[j].unsqueeze(0);
+    CHECK_EQ(centre[0][0].item<double>(), (double(cmax) + 0.5) * 1.0);
+    t.set_features(torch::arange(t.size(), torch::kFloat64).unsqueeze(1));
+    CHECK_EQ(interpolate(t, centre, InterpMode::Nearest)[0][0].item<double>(), double(j));
 }
 
 TEST(config_supports_anisotropic_resolution) {
