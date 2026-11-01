@@ -17,6 +17,7 @@
 //
 //   ml_representations --method uniform --seed 1 --epochs 12 --output run.json
 // --device cuda (default) requires CUDA; cpu is explicit, and auto permits fallback.
+// --profile-steps N adds a "profile" record: synchronized per-phase ms of N training steps.
 //
 // Writes a JSON record (per-epoch loss/accuracy/time, final accuracy, macro
 // precision/recall/F1, train time, inference latency/throughput, peak CUDA and
@@ -69,6 +70,34 @@ constexpr double kPi = 3.14159265358979323846;
 
 double now_s() {
   return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+}
+
+void sync(const torch::Device &d) {
+  if (d.is_cuda())
+    torch::cuda::synchronize();
+}
+
+// --profile-steps N: device-synchronized phase times of N training steps (epoch 2, or the
+// only epoch). Off by default; the extra synchronizations slow that epoch down, so profile
+// runs are not timing runs.
+struct StepProfile {
+  bool on = false;
+  std::map<std::string, double> ms; // accumulated over the profiled steps
+};
+StepProfile g_prof;
+
+double prof_start(const torch::Device &d) {
+  if (!g_prof.on)
+    return 0;
+  sync(d);
+  return now_s();
+}
+
+void prof_add(const char *phase, double t0, const torch::Device &d) {
+  if (!g_prof.on)
+    return;
+  sync(d);
+  g_prof.ms[phase] += 1000.0 * (now_s() - t0);
 }
 
 // ---------------------------------------------------------------- dataset
@@ -582,19 +611,35 @@ struct AdaptiveNetImpl : torch::nn::Module {
   }
   at::Tensor forward(const ad::AdaptiveSparseTensor &in, int64_t B) {
     ad::AdaptiveKernelConfig kc; // 3^3, CenterSampled
+    const auto dev = in.features().device();
     auto layer = [&](const ad::AdaptiveSparseTensor &x, size_t i) {
+      if (g_prof.on) { // build (or hit) the kernel map first so the conv below only applies it
+        const double t = prof_start(dev);
+        ad::KernelMapCache::instance().get_or_build(x, kc);
+        prof_add("fwd_kernel_map", t, dev);
+      }
+      double t = prof_start(dev);
       auto y = ad::adaptive_convolution(x, weights[i], kc);
-      return y.with_features(torch::relu(bns[i]->forward(y.features())));
+      prof_add("fwd_conv_apply", t, dev);
+      t = prof_start(dev);
+      auto r = y.with_features(torch::relu(bns[i]->forward(y.features())));
+      prof_add("fwd_bn_relu", t, dev);
+      return r;
     };
     auto x = layer(layer(in, 0), 1);
     size_t i = 2;
     for (int s = 1; s < 4; ++s) {
       // Level kAdaptiveDepth - s: 2, 1, 0 (cell 0.125, 0.25, 0.5) like stride 2, 4, 8.
+      const double t = prof_start(dev);
       x = ad::adaptive_pool(x, static_cast<uint32_t>(kAdaptiveDepth - s), ad::Reduction::Mean);
+      prof_add("fwd_pool", t, dev);
       x = layer(layer(x, i), i + 1);
       i += 2;
     }
-    return head->forward(pool_avg_max(x.features(), sample_ids(x, x.features().device()), B));
+    const double t = prof_start(dev);
+    auto out = head->forward(pool_avg_max(x.features(), sample_ids(x, dev), B));
+    prof_add("fwd_head", t, dev);
+    return out;
   }
 };
 TORCH_MODULE(AdaptiveNet);
@@ -656,11 +701,6 @@ void reset_cuda_peak() {
 #endif
 }
 
-void sync(const torch::Device &d) {
-  if (d.is_cuda())
-    torch::cuda::synchronize();
-}
-
 double median(std::vector<double> v) {
   if (v.empty())
     return 0;
@@ -674,7 +714,7 @@ double median(std::vector<double> v) {
 int main(int argc, char **argv) {
   std::string method = "uniform", output = "ml_run.json", device_s = "cuda";
   int seed = 1, epochs = 12, train_per_class = 80, test_per_class = 40, npoints = 2048,
-      batch_size = 16;
+      batch_size = 16, profile_steps = 0;
   uint64_t data_seed = 2026;
   int64_t density_threshold = 12;
   double lr = 1e-3;
@@ -706,6 +746,8 @@ int main(int argc, char **argv) {
       device_s = v;
     else if (a == "--output")
       output = v;
+    else if (a == "--profile-steps")
+      profile_steps = std::stoi(v);
     else
       throw std::invalid_argument("unknown argument " + a);
   }
@@ -838,6 +880,9 @@ int main(int argc, char **argv) {
   };
 
   // ---- training
+  const int profile_epoch = std::min(1, epochs - 1);
+  int64_t prof_done = 0, prof_samples = 0;
+  double prof_misses = 0, prof_hits = 0;
   reset_cuda_peak();
   std::mt19937_64 shuffle_rng(static_cast<uint64_t>(seed) * 9973ULL);
   json epochs_j = json::array();
@@ -856,12 +901,32 @@ int main(int argc, char **argv) {
                                order.begin() + std::min(order.size(), i + batch_size));
       if (idx.size() < 2)
         continue; // BatchNorm needs > 1 sample
+      g_prof.on = e == profile_epoch && nb < profile_steps;
+      const auto cache0 = ad::KernelMapCache::instance().stats();
+      double t = prof_start(dev);
       auto b = make_batch(method, train_rep, train, idx, dev);
+      prof_add("make_batch", t, dev);
+      t = prof_start(dev);
       auto logits = forward(b);
+      prof_add("forward_total", t, dev);
+      t = prof_start(dev);
       auto loss = torch::nn::functional::cross_entropy(logits, b.labels);
       opt.zero_grad();
+      prof_add("loss_zero_grad", t, dev);
+      t = prof_start(dev);
       loss.backward();
+      prof_add("backward", t, dev);
+      t = prof_start(dev);
       opt.step();
+      prof_add("optimizer_step", t, dev);
+      if (g_prof.on) {
+        const auto cache1 = ad::KernelMapCache::instance().stats();
+        prof_misses += static_cast<double>(cache1.misses - cache0.misses);
+        prof_hits += static_cast<double>(cache1.hits - cache0.hits);
+        prof_samples += b.B;
+        ++prof_done;
+      }
+      g_prof.on = false;
       loss_sum += loss.item<double>();
       correct += logits.argmax(1).eq(b.labels).sum().item<int64_t>();
       seen += b.B;
@@ -959,6 +1024,22 @@ int main(int argc, char **argv) {
             {"active_elements_max", *std::max_element(active.begin(), active.end())},
             {"level_histogram_train", level_hist},
             {"curve", epochs_j}};
+  if (prof_done > 0) {
+    json p = {{"steps", prof_done},
+              {"epoch", profile_epoch + 1},
+              {"samples_per_step", static_cast<double>(prof_samples) / prof_done},
+              {"kernel_map_cache_misses_per_step", prof_misses / prof_done},
+              {"kernel_map_cache_hits_per_step", prof_hits / prof_done}};
+    json ms = json::object();
+    for (const auto &[k, v] : g_prof.ms)
+      ms[k] = v / prof_done;
+    p["ms_per_step"] = ms;
+    j["profile"] = p;
+    std::cout << "profile (" << prof_done << " steps, ms/step):";
+    for (const auto &[k, v] : g_prof.ms)
+      std::cout << " " << k << "=" << v / prof_done;
+    std::cout << " kmap_misses/step=" << prof_misses / prof_done << std::endl;
+  }
   std::ofstream result_file(output);
   if (!result_file)
     throw std::runtime_error("Cannot open result output: " + output);
