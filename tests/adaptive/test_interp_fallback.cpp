@@ -76,7 +76,7 @@ at::Tensor brute_force_fallback(const AdaptiveSparseTensor &t, const at::Tensor 
 
 TEST(interp_fallback_default_is_zero_and_unchanged) {
     auto t = two_level_fixture();
-    auto q = torch::tensor({{1.0, 1.0, 1.0}, {6.5, 1.0, 1.0}, {4.5, 4.5, 4.5}, {5.0, 4.5, 4.5},
+    auto q = torch::tensor({{1.0, 1.0, 1.0}, {6.5, 1.0, 1.0}, {4.5, 4.5, 4.5}, {5.0, 4.5, 6.5},
                             {12.0, 3.0, 3.0}, {-3.0, 1.0, 1.0}},
                            torch::kFloat64);
     for (auto mode : {InterpMode::Nearest, InterpMode::Multilinear}) {
@@ -123,9 +123,12 @@ TEST(interp_fallback_gradients) {
     auto q = torch::tensor({{6.5, 1.0, 1.0}, {5.0, 4.5, 6.5}, {12.0, 3.0, 3.0}}, torch::kFloat64);
     interpolate(u, q, InterpMode::Nearest, InterpFallback::CoarserAncestor).select(1, 0).sum().backward();
     auto g = f.grad().select(1, 0);
-    CHECK_NEAR(g[0].item<double>(), 64.0 / 72.0, 1e-12);        // A via the level-0 mean
-    CHECK_NEAR(g[1].item<double>(), 8.0 / 72.0 + 1.0, 1e-12);   // B via both cells
-    CHECK_NEAR(g[2].item<double>(), 1.0, 1e-12);                // C (covered)
+    const int64_t a = t.index_of_key({0, 0, 0}, 1), b = t.index_of_key({2, 2, 2}, 2),
+                  c = t.index_of_key({1, 0, 0}, 0);
+    CHECK(a >= 0 && b >= 0 && c >= 0);
+    CHECK_NEAR(g[a].item<double>(), 64.0 / 72.0, 1e-12);        // A via the level-0 mean
+    CHECK_NEAR(g[b].item<double>(), 8.0 / 72.0 + 1.0, 1e-12);   // B via both cells
+    CHECK_NEAR(g[c].item<double>(), 1.0, 1e-12);                // C (covered)
     CHECK_NEAR(f.grad().select(1, 1).abs().sum().item<double>(), 0.0, 0.0);
 }
 
