@@ -19,8 +19,8 @@ void check_weight(const at::Tensor &weight, const AdaptiveKernelMap &m, int64_t 
 // Gather -> (optional per-pair weight) -> GEMM per kernel slot -> scatter-add.
 // `transpose` swaps the direction so the transposed convolution reuses the map.
 // The map's index/weight arrays come from the entry's device cache (uploaded once per
-// device/dtype). One gather, one weight multiply and one scatter-add cover all kernel slots;
-// only the GEMM runs per slot, on row blocks of the gathered features. The pairs are sorted by
+// device/dtype). On CUDA one gather, one weight multiply and one scatter-add cover all kernel
+// slots; only the GEMM runs per slot, on row blocks of the gathered features. The pairs are sorted by
 // slot, so the scatter-add sees the same rows in the same order as one scatter per slot did.
 // split_with_sizes / unbind (not per-slot slice / select) keep the backward pass to one
 // concatenation each instead of one full-size zero-filled gradient per slot.
@@ -31,8 +31,31 @@ at::Tensor apply_map(const at::Tensor &x, const at::Tensor &weight, const Kernel
   auto arrays = entry.device->get(m, x.device(), x.scalar_type(), weighted);
   const at::Tensor &from_d = transpose ? arrays.out_index : arrays.in_index;
   const at::Tensor &to_d = transpose ? arrays.in_index : arrays.out_index;
-  const std::vector<at::Tensor> wk = weight.to(x.scalar_type()).unbind(0);
   auto y = torch::zeros({n_out, cout}, x.options());
+  if (!x.is_cuda()) {
+    // Host path: the per-slot formulation. Its temporaries stay small (one slot at a time),
+    // which measured faster on the CPU than materialising the full [P, C] gather/products
+    // (large fresh allocations), and it keeps CPU results bit-identical to earlier versions.
+    auto wt = weight.to(x.scalar_type());
+    bool any = false;
+    for (int64_t k = 0; k < m.num_kernels; ++k) {
+      const int64_t b = m.kernel_offsets[k], e = m.kernel_offsets[k + 1];
+      if (b == e)
+        continue;
+      any = true;
+      auto xs = x.index_select(0, from_d.slice(0, b, e));
+      if (weighted)
+        xs = xs * arrays.weight.slice(0, b, e).unsqueeze(1);
+      y.index_add_(0, to_d.slice(0, b, e), xs.matmul(wt[k]));
+    }
+    if (!any) { // keep y connected to x and weight (empty batch -> zero gradients)
+      auto none = from_d.slice(0, 0, 0);
+      y.index_add_(0, none, x.index_select(0, none).matmul(wt[0]));
+    }
+    return y;
+  }
+  // Device path: launches per call drop from ~4 per slot to ~1 per slot + 4.
+  const std::vector<at::Tensor> wk = weight.to(x.scalar_type()).unbind(0);
   auto xs = x.index_select(0, from_d);
   if (weighted)
     xs = xs * arrays.weight.unsqueeze(1);
