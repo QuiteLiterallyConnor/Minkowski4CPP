@@ -17,6 +17,11 @@ constexpr int64_t kMinDeviceKeys = 1 << 14;
 
 constexpr int64_t kParallelThreshold = 32768;
 
+// |finest-level coordinate| < 2^52: see Topology::make.
+constexpr uint32_t kMaxFinestCoordinateBits = 52;
+static_assert(AdaptiveVoxelConfig::kMaxSupportedDepth < kMaxFinestCoordinateBits,
+              "every level needs a non-empty coordinate range");
+
 // Plain std::thread workers on purpose: LibTorch's OpenMP runtime can clash with the
 // application's OpenMP runtime on Windows, so no OpenMP / at::parallel_for here.
 int thread_count(int64_t n) {
@@ -253,12 +258,24 @@ std::shared_ptr<const Topology> Topology::make(const AdaptiveVoxelConfig &cfg,
     std::mutex counts_mutex;
     const Key *kd = t->keys.data();
     const uint32_t max_level = t->max_depth;
+    // A level-l coordinate spans finest-level coordinates c * 2^(max_depth - l). Keeping those
+    // in [-2^52, 2^52) means refinement (2c + bit) never overflows and every cell bound and
+    // centre (c + 0.5) * size is an exact double, so point location and overlap tests agree
+    // with the integer keys.
+    std::vector<int64_t> limit(max_level + 1);
+    for (uint32_t l = 0; l <= max_level; ++l)
+      limit[l] = int64_t(1) << (kMaxFinestCoordinateBits - (max_level - l));
     for_blocks(N, [&](int64_t b, int64_t e) {
       std::vector<int64_t> local(max_level + 1, 0);
       for (int64_t i = b; i < e; ++i) {
         const Key &k = kd[i];
         if (k.level > max_level)
           throw std::invalid_argument("adaptive voxel level exceeds max_depth");
+        for (int d = 0; d < D; ++d)
+          if (k.coordinates[d] < -limit[k.level] || k.coordinates[d] >= limit[k.level])
+            throw std::invalid_argument(
+                "adaptive voxel coordinate out of range: level-l coordinates must lie in "
+                "[-2^(52 - max_depth + l), 2^(52 - max_depth + l))");
         if (i > 0 && !key_less(kd[i - 1], k))
           throw std::invalid_argument("duplicate or unsorted adaptive voxel keys");
         ++local[k.level];

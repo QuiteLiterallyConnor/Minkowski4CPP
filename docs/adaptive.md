@@ -55,7 +55,10 @@ auto explicit_tensor = AdaptiveSparseTensor::from_voxels(
     coords, leaf_levels, values, cfg);
 ```
 
-Leaves must not overlap.
+Leaves must not overlap. Coordinates must stay in the exactly representable
+range: a level-`l` coordinate `c` needs `-2^52 <= c * 2^(max_depth - l) < 2^52`
+(for example `|c| < 2^48` at level 0 with `max_depth = 4`). `from_voxels`,
+`from_points` and every topology edit throw `std::invalid_argument` outside it.
 
 ## Refinement and coarsening
 
