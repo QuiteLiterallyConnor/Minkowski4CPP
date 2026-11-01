@@ -14,8 +14,10 @@
 #include <algorithm>
 #include <array>
 #include <functional>
+#include <iostream>
 #include <map>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "MinkowskiEngine/adaptive/adaptive.hpp"
@@ -165,12 +167,21 @@ at::Tensor numerical_grad(const std::function<double(const at::Tensor&)>& loss, 
 
 // Autograd gradient of loss(x) w.r.t. x versus central finite differences.
 void check_grad(const std::function<at::Tensor(const at::Tensor&)>& loss, const at::Tensor& x0,
-                double rtol = 1e-5, double atol = 1e-6) {
+                double rtol = 1e-5, double atol = 1e-6, const std::string& label = "") {
     auto x = x0.clone().set_requires_grad(true);
-    loss(x).backward();
+    auto l = loss(x);
+    l.backward();
     CHECK(x.grad().defined());
     auto num = numerical_grad([&](const at::Tensor& v) { return loss(v).item<double>(); },
                               x0.clone());
+    if (!torch::allclose(x.grad(), num, rtol, atol)) {
+        auto d = (x.grad() - num).abs();
+        auto i = d.argmax().item<int64_t>();
+        std::cout << "         check_grad " << label << ": loss " << l.item<double>()
+                  << ", max |grad| " << num.abs().max().item<double>() << ", worst element "
+                  << i << " autograd " << x.grad().view(-1)[i].item<double>() << " vs fd "
+                  << num.view(-1)[i].item<double>() << "\n";
+    }
     CHECK_ALLCLOSE(x.grad(), num, rtol, atol);
 }
 
@@ -332,6 +343,7 @@ TEST(coverage_gradient_strided_and_transposed_convolution) {
             AdaptiveKernelConfig kc;
             kc.mode = mode;
             kc.output_level_shift = shift;
+            const std::string lbl = "shift " + std::to_string(shift) + " mode " + std::to_string(int(mode));
             torch::manual_seed(10 - shift);
             auto w = torch::randn({27, 2, 3}, torch::kFloat64);
             auto down = adaptive_convolution(base, w, kc);
@@ -343,12 +355,12 @@ TEST(coverage_gradient_strided_and_transposed_convolution) {
                             probe_down)
                         .sum();
                 },
-                base.features());
+                base.features(), 1e-5, 1e-6, lbl + " forward/features");
             check_grad(
                 [&](const at::Tensor& v) {
                     return (adaptive_convolution(base, v, kc).features() * probe_down).sum();
                 },
-                w);
+                w, 1e-5, 1e-6, lbl + " forward/weight");
             // Transpose back onto the reference leaves, w.r.t. features and weight.
             auto wt = torch::randn({27, 3, 2}, torch::kFloat64);
             auto probe_up = torch::randn({base.size(), 2}, torch::kFloat64);
@@ -359,14 +371,14 @@ TEST(coverage_gradient_strided_and_transposed_convolution) {
                             probe_up)
                         .sum();
                 },
-                down.features());
+                down.features(), 1e-5, 1e-6, lbl + " transpose/features");
             check_grad(
                 [&](const at::Tensor& v) {
                     return (adaptive_convolution_transpose(down, v, kc, base).features() *
                             probe_up)
                         .sum();
                 },
-                wt);
+                wt, 1e-5, 1e-6, lbl + " transpose/weight");
         }
     }
 }
@@ -425,7 +437,7 @@ TEST(coverage_gradient_interpolation_multilinear_mixed_tree) {
 // just left of x = 2 the 2x2 box sees 0.5 area of value 1 out of 3 -> 1/6; just right the 1x1
 // box sees none -> 0.
 TEST(coverage_interpolation_multilinear_continuity_by_level) {
-    auto t = from_keys({{0, 0, 0}, {4, 0, 1}, {4, 1, 1}},
+    auto t = from_keys({{0, 0, 0}, {2, 0, 1}, {2, 1, 1}},
                        torch::tensor({{0.0}, {0.0}, {1.0}}, torch::kFloat64),
                        config_nd({2.0, 2.0}, 1));
     const double e = 1e-7;
@@ -487,7 +499,7 @@ TEST(coverage_gradient_max_with_ties_splits_evenly) {
     dir[a][0] = 1.0;
     dir[c][0] = 1.0;
     auto at = [&](double e) {
-        return adaptive_pool(t.with_features(f0 + e * dir), 0, Reduction::Max)
+        return adaptive_pool(t.with_features(t.features() + e * dir), 0, Reduction::Max)
             .features()[0][0]
             .item<double>();
     };
