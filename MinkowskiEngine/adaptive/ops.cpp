@@ -20,8 +20,10 @@ void check_weight(const at::Tensor &weight, const AdaptiveKernelMap &m, int64_t 
 // `transpose` swaps the direction so the transposed convolution reuses the map.
 // The map's index/weight arrays come from the entry's device cache (uploaded once per
 // device/dtype). One gather, one weight multiply and one scatter-add cover all kernel slots;
-// only the GEMM runs per slot, on row slices of the gathered features. The pairs are sorted by
+// only the GEMM runs per slot, on row blocks of the gathered features. The pairs are sorted by
 // slot, so the scatter-add sees the same rows in the same order as one scatter per slot did.
+// split_with_sizes / unbind (not per-slot slice / select) keep the backward pass to one
+// concatenation each instead of one full-size zero-filled gradient per slot.
 at::Tensor apply_map(const at::Tensor &x, const at::Tensor &weight, const KernelMapEntry &entry,
                      bool transpose, int64_t n_out, bool weighted) {
   const AdaptiveKernelMap &m = entry.map;
@@ -29,22 +31,24 @@ at::Tensor apply_map(const at::Tensor &x, const at::Tensor &weight, const Kernel
   auto arrays = entry.device->get(m, x.device(), x.scalar_type(), weighted);
   const at::Tensor &from_d = transpose ? arrays.out_index : arrays.in_index;
   const at::Tensor &to_d = transpose ? arrays.in_index : arrays.out_index;
-  auto wt = weight.to(x.scalar_type());
+  const std::vector<at::Tensor> wk = weight.to(x.scalar_type()).unbind(0);
   auto y = torch::zeros({n_out, cout}, x.options());
   auto xs = x.index_select(0, from_d);
   if (weighted)
     xs = xs * arrays.weight.unsqueeze(1);
+  std::vector<int64_t> sizes(static_cast<size_t>(m.num_kernels));
+  for (int64_t k = 0; k < m.num_kernels; ++k)
+    sizes[k] = m.kernel_offsets[k + 1] - m.kernel_offsets[k];
+  const std::vector<at::Tensor> blocks = xs.split_with_sizes(sizes, 0);
   std::vector<at::Tensor> parts;
   parts.reserve(static_cast<size_t>(m.num_kernels));
-  for (int64_t k = 0; k < m.num_kernels; ++k) {
-    const int64_t b = m.kernel_offsets[k], e = m.kernel_offsets[k + 1];
-    if (b != e)
-      parts.push_back(xs.slice(0, b, e).matmul(wt[k]));
-  }
+  for (int64_t k = 0; k < m.num_kernels; ++k)
+    if (sizes[k] > 0)
+      parts.push_back(blocks[k].matmul(wk[k]));
   // No pairs (e.g. an empty input): a zero-row product keeps y connected to x and weight, so
   // backward() on an empty batch yields zero gradients instead of an error.
   if (parts.empty())
-    parts.push_back(xs.matmul(wt[0]));
+    parts.push_back(xs.matmul(wk[0]));
   y.index_add_(0, to_d, parts.size() == 1 ? parts[0] : torch::cat(parts, 0));
   return y;
 }

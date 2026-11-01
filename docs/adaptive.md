@@ -128,6 +128,13 @@ auto restored = adaptive_convolution_transpose(coarse, up_weight, down, t);
 ```
 
 Transpose convolution uses the reference tensor's leaves.
+
+Kernel maps are built on the host once per (topology, kernel size, mode, shift) and cached;
+their index and weight arrays are uploaded once per device and dtype and reused by later
+calls. `KernelMapCache::instance().clear()` releases both. On CUDA the scatter-add uses
+`index_add_`, whose floating-point atomics make results vary in the last bits between runs;
+call `torch::globalContext().setDeterministicAlgorithms(true, false)` for bit-reproducible
+outputs (slower), as for any PyTorch scatter.
 `output_level_shift > 0` is currently unsupported.
 
 ## Pooling, interpolation, and resampling

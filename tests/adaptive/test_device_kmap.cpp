@@ -154,3 +154,23 @@ TEST(device_kmap_empty_map_gives_zeros) {
     CHECK(w.grad().defined());
     CHECK_EQ(w.grad().abs().sum().item<double>(), 0.0);
 }
+
+TEST(device_kmap_cuda_deterministic_mode_is_bit_reproducible) {
+    if (!torch::cuda::is_available()) return;
+    auto t = mixed_tensor(8, torch::kFloat32).to(torch::kCUDA);
+    AdaptiveKernelConfig kc;
+    kc.mode = AdaptiveConvMode::OverlapWeighted;
+    auto w = torch::randn({27, 8, 16}, torch::kFloat32).to(torch::kCUDA);
+    auto& ctx = at::globalContext();
+    const bool was = ctx.deterministicAlgorithms();
+    const bool warn = ctx.deterministicAlgorithmsWarnOnly();
+    ctx.setDeterministicAlgorithms(true, false);
+    auto y1 = adaptive_convolution(t, w, kc).features();
+    auto y2 = adaptive_convolution(t, w, kc).features();
+    ctx.setDeterministicAlgorithms(was, warn);
+    CHECK(torch::equal(y1, y2));
+    // Without it, results agree to float32 rounding (atomics may reorder the additions).
+    auto y3 = adaptive_convolution(t, w, kc).features();
+    CHECK_ALLCLOSE(y1, y3, 1e-5, 1e-5);
+    KernelMapCache::instance().clear();
+}
