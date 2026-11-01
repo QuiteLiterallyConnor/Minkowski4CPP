@@ -21,14 +21,14 @@ CoordinateManager::CoordinateManager(
   if (map_type != CoordinateMapBackend::CPU) {
     throw std::runtime_error("GPU backends not available in CPU_ONLY build");
   }
-  manager_ = std::make_unique<cpu_manager_type<int32_t>>(algo, -1);
+  manager_ = std::make_unique<cpu_manager_type<int32_t>>(algo);
 #else
   if (map_type == CoordinateMapBackend::CPU) {
-    manager_ = std::make_unique<cpu_manager_type<int32_t>>(algo, -1);
+    manager_ = std::make_unique<cpu_manager_type<int32_t>>(algo);
   } else if (alloc_type == GPUMemoryAllocatorBackend::PYTORCH) {
-    manager_ = std::make_unique<gpu_c10_manager_type<int32_t>>(algo, -1);
+    manager_ = std::make_unique<gpu_c10_manager_type<int32_t>>(algo);
   } else {
-    manager_ = std::make_unique<gpu_default_manager_type<int32_t>>(algo, -1);
+    manager_ = std::make_unique<gpu_default_manager_type<int32_t>>(algo);
   }
 #endif
 }
