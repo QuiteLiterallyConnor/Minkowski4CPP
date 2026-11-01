@@ -205,11 +205,11 @@ void build_tile_lists(const at::Tensor &bounds, int64_t rows, int64_t cols,
   const auto widths = x1 - x0 + 1;
   const auto counts = widths * (y1 - y0 + 1);
   const int64_t total = m > 0 ? counts.sum().item<int64_t>() : 0;
-  // The CUDA kernels index pairs and Gaussians with int32.
+  // The fused CPU and CUDA rasterizers index pairs and Gaussians with int32.
   TORCH_CHECK(total <= std::numeric_limits<int32_t>::max() &&
                   m <= std::numeric_limits<int32_t>::max(),
               "render: ", total, " (tile, Gaussian) pairs for ", m,
-              " Gaussians exceed the int32 range of the CUDA rasterizer; "
+              " Gaussians exceed the int32 range of the fused rasterizers; "
               "render fewer or smaller Gaussians or a smaller image");
   if (total == 0) {
     ids = at::zeros({1}, bounds.options().dtype(at::kInt));

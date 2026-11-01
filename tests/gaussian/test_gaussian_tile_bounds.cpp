@@ -81,9 +81,13 @@ TEST(gaussian_tile_bounds_match_brute_force_cpu) {
     const auto ref = brute_force(scene, camera);
     for (int64_t tile : {16, 7, 64}) {
       torch::NoGradGuard guard;
-      expect_matches_reference(render_splats(scene, camera, false, tile), ref,
-                               "cpu seed " + std::to_string(seed) + " tile " +
-                                   std::to_string(tile));
+      // Both CPU paths: the fused rasterizer and the LibTorch reference.
+      for (bool kernels : {true, false}) {
+        expect_matches_reference(
+            render_splats(scene, camera, kernels, tile), ref,
+            std::string(kernels ? "cpu-kernels" : "cpu-libtorch") + " seed " +
+                std::to_string(seed) + " tile " + std::to_string(tile));
+      }
     }
   }
 }
@@ -164,6 +168,9 @@ TEST(gaussian_tile_pairs_counts_rasterized_pairs) {
   const auto a = render_splats(scene, camera, false, 16);
   const auto b = render_splats(scene, camera, false, 61);
   CHECK(a.tile_pairs.item<int64_t>() >= a.visible.sum().item<int64_t>());
+  // The fused CPU rasterizer composites the same pairs (same bounds).
+  CHECK_EQ(render_splats(scene, camera, true, 16).tile_pairs.item<int64_t>(),
+           a.tile_pairs.item<int64_t>());
   // One tile covers the whole image: one pair per visible Gaussian.
   CHECK_EQ(b.tile_pairs.item<int64_t>(), b.visible.sum().item<int64_t>());
   if (tile_bounds_cuda_available()) {
