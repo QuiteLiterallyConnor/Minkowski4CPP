@@ -1,4 +1,8 @@
 build/
+build*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
 *.obj
 *.o
 *.a

@@ -1,0 +1,18 @@
+title: Minkowski4CPP
+description: Native C++ sparse tensors, adaptive voxelization, and Gaussian splats with LibTorch and CUDA.
+url: https://quiteliterallyconnor.github.io
+baseurl: /Minkowski4CPP
+repository_url: https://github.com/QuiteLiterallyConnor/Minkowski4CPP
+markdown: kramdown
+highlighter: rouge
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+permalink: pretty
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+exclude:
+  - README.md

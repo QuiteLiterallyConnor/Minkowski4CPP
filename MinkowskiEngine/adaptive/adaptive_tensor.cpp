@@ -216,20 +216,22 @@ AdaptiveSparseTensor AdaptiveSparseTensor::from_voxels(const at::Tensor &coordin
   std::vector<Key> keys(static_cast<size_t>(N));
   const auto *c = coords.data_ptr<int64_t>();
   const auto *l = lv.data_ptr<int32_t>();
-  for (int64_t i = 0; i < N; ++i) {
-    if (l[i] < 0)
-      throw std::invalid_argument("negative voxel level");
-    keys[i] = Key{};
-    keys[i].level = static_cast<uint32_t>(l[i]);
-    for (int d = 0; d < D; ++d)
-      keys[i].coordinates[d] = c[i * D + d];
-  }
-  auto order = detail::sorted_order(keys);
-  std::vector<Key> sorted(static_cast<size_t>(N));
-  for (int64_t i = 0; i < N; ++i)
-    sorted[i] = keys[order[i]];
-  auto feats = features.index_select(0, index_tensor(order, features.device()));
-  return from_topology(Topology::make(config, std::move(sorted)), feats);
+  detail::parallel_blocks(N, [&](int64_t b, int64_t e) {
+    for (int64_t i = b; i < e; ++i) {
+      if (l[i] < 0)
+        throw std::invalid_argument("negative voxel level");
+      Key &key = keys[i];
+      key = Key{};
+      key.level = static_cast<uint32_t>(l[i]);
+      for (int d = 0; d < D; ++d)
+        key.coordinates[d] = c[i * D + d];
+    }
+  });
+  std::vector<int64_t> order;
+  detail::sort_keys(keys, order);
+  auto feats = order.empty() ? features
+                             : features.index_select(0, index_tensor(order, features.device()));
+  return from_topology(Topology::make(config, std::move(keys)), feats);
 }
 
 AdaptiveSparseTensor AdaptiveSparseTensor::from_points(const at::Tensor &points,
@@ -291,13 +293,13 @@ int64_t AdaptiveSparseTensor::channels() const { return features_.size(1); }
 const AdaptiveVoxelConfig &AdaptiveSparseTensor::config() const { return topology_->config; }
 at::Tensor AdaptiveSparseTensor::coordinates() const { return topology_->coords; }
 at::Tensor AdaptiveSparseTensor::levels() const { return topology_->levels; }
-at::Tensor AdaptiveSparseTensor::voxel_sizes() const { return topology_->sizes; }
+at::Tensor AdaptiveSparseTensor::voxel_sizes() const { return topology_->sizes_tensor(); }
 at::Tensor AdaptiveSparseTensor::volumes() const { return topology_->volumes; }
 at::Tensor AdaptiveSparseTensor::centers() const {
-  return topology_->lo + 0.5 * topology_->sizes;
+  return topology_->centers_tensor();
 }
 std::pair<at::Tensor, at::Tensor> AdaptiveSparseTensor::bounds() const {
-  return {topology_->lo, topology_->hi};
+  return {topology_->lo_tensor(), topology_->hi_tensor()};
 }
 std::vector<int64_t> AdaptiveSparseTensor::counts_by_level() const { return topology_->counts; }
 uint64_t AdaptiveSparseTensor::topology_version() const { return topology_->id; }

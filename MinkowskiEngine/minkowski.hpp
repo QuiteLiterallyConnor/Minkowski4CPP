@@ -39,11 +39,23 @@
 
 #include "training/training.hpp"
 
+#ifdef MINKOWSKI_ENABLE_GAUSSIAN
+#include "gaussian/gaussian3d.hpp"
+#include "gaussian/gaussian_tensor.hpp"
+#include "gaussian/gaussian_optimizer.hpp"
+#include "gaussian/gaussian_ply.hpp"
+#include "gaussian/gaussian_camera.hpp"
+#include "gaussian/gaussian_sh.hpp"
+#include "gaussian/gaussian_model.hpp"
+#include "gaussian/gaussian_render.hpp"
+#include "gaussian/gaussian_trainer.hpp"
+#endif
+
 namespace minkowski {
 
-constexpr const char* VERSION = "0.1.0-cpp";
-constexpr int VERSION_MAJOR = 0;
-constexpr int VERSION_MINOR = 1;
+constexpr const char* VERSION = "1.3.0-cpp";
+constexpr int VERSION_MAJOR = 1;
+constexpr int VERSION_MINOR = 3;
 constexpr int VERSION_PATCH = 0;
 
 } 

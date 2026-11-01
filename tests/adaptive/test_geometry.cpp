@@ -3,7 +3,7 @@
 #include <unordered_set>
 
 #include "MinkowskiEngine/adaptive/adaptive.hpp"
-#include "test_framework.hpp"
+#include "utils/test_framework.hpp"
 
 using namespace minkowski::adaptive;
 

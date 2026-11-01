@@ -4,7 +4,7 @@
 #include <functional>
 
 #include "MinkowskiEngine/adaptive/adaptive.hpp"
-#include "test_framework.hpp"
+#include "utils/test_framework.hpp"
 
 using namespace minkowski::adaptive;
 

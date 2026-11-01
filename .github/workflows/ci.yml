@@ -10,6 +10,10 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda: ['124', '132', '134']
     permissions:
       contents: read
       packages: write
@@ -17,13 +21,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+      - name: Test builder scripts
+        run: bash tests/builders/test-builders.sh
+
+      - name: Test PowerShell builders
+        shell: pwsh
+        run: ./tests/builders/test-builders.ps1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
       - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v2
         with:
           registry: ghcr.io
@@ -35,8 +44,19 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
+          # The pinned LibTorch archives and CMake download are x86_64.
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            CUDA_VERSION=${{ matrix.cuda }}
           tags: |
-            ghcr.io/quiteliterallyconnor/minkowski4cpp:latest
-            ghcr.io/quiteliterallyconnor/minkowski4cpp:${{ github.ref_name }}
+            ghcr.io/quiteliterallyconnor/minkowski4cpp:cu${{ matrix.cuda }}
+            ghcr.io/quiteliterallyconnor/minkowski4cpp:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}-cu${{ matrix.cuda }}
+
+      - name: Publish default CUDA tags
+        if: github.event_name != 'pull_request' && matrix.cuda == '134'
+        run: |
+          docker buildx imagetools create \
+            --tag "ghcr.io/quiteliterallyconnor/minkowski4cpp:latest" \
+            --tag "ghcr.io/quiteliterallyconnor/minkowski4cpp:${{ github.ref_name }}" \
+            "ghcr.io/quiteliterallyconnor/minkowski4cpp:${{ github.ref_name }}-cu134"

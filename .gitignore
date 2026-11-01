@@ -8,3 +8,7 @@ apt/minkowski-repo/
 debian
 .wix/
 *.log
+CMakeCache.txt
+CMakeFiles/
+build.ninja
+dist/

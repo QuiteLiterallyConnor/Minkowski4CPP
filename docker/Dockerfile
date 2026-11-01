@@ -1,5 +1,14 @@
-# Use NVIDIA CUDA base image with development tools
-FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
+# Select a matched CUDA/Ubuntu/LibTorch profile.
+ARG CUDA_VERSION=134
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS cuda-124
+FROM nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04 AS cuda-132
+FROM nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04 AS cuda-134
+FROM cuda-${CUDA_VERSION} AS builder
+
+ARG CUDA_VERSION
+ARG CUDA_ARCHITECTURES=86
+ARG JOBS=4
+ENV CUDA_VERSION=${CUDA_VERSION}
 
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -7,7 +16,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install essential build tools and dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    cmake \
     git \
     wget \
     unzip \
@@ -18,30 +26,43 @@ RUN apt-get update && apt-get install -y \
     libomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# CUDA 13 needs modern CMake; Torch 2.5.1 still needs legacy NvToolsExt targets.
+ARG CMAKE_VERSION
+COPY docker/cuda-profile.sh /opt/cuda-profile.sh
+RUN bash -c 'source /opt/cuda-profile.sh && \
+    wget -q "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+         -O /tmp/cmake.tar.gz && \
+    tar -xzf /tmp/cmake.tar.gz -C /opt && \
+    ln -sf /opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/* /usr/local/bin/ && \
+    rm /tmp/cmake.tar.gz && \
+    cmake --version'
+
 # Set environment variables for CUDA
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:/opt/libtorch/lib:${LD_LIBRARY_PATH}
 
-# Download and install LibTorch for Linux with CUDA 12.4 support
-RUN cd /opt && \
-    wget -q https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.5.1%2Bcu124.zip && \
-    unzip libtorch-cxx11-abi-shared-with-deps-2.5.1+cu124.zip && \
-    rm libtorch-cxx11-abi-shared-with-deps-2.5.1+cu124.zip
+RUN bash -c 'source /opt/cuda-profile.sh && wget -q "${LIBTORCH_URL}" -O /opt/libtorch.zip' && \
+    cd /opt && \
+    unzip -q libtorch.zip && \
+    rm libtorch.zip
 
 # Copy the project source tree
 WORKDIR /tmp/minkowski-build
 COPY . .
 
 # Build and install MinkowskiEngine
-RUN mkdir build && cd build && \
+RUN bash -c 'source /opt/cuda-profile.sh && \
+    mkdir build && cd build && \
     cmake .. \
       -GNinja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_PREFIX_PATH=/opt/libtorch \
       -DCMAKE_INSTALL_PREFIX=/usr/local \
-    && cmake --build . --parallel 4 \
-    && cmake --install .
+      -DCMAKE_INSTALL_LIBDIR=lib \
+      -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
+    && cmake --build . --parallel ${JOBS} \
+    && cmake --install .'
 
 RUN ld -r --whole-archive /usr/local/lib/libminkowski_cpp.a \
          --no-whole-archive \
