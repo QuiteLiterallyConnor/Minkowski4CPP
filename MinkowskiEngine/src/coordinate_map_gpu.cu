@@ -29,6 +29,7 @@
 #include "gpu.cuh"
 #include "kernel_map.cuh"
 #include "kernel_map.hpp"
+#include "thrust_policy.cuh"
 #include "sharedmem.cuh"
 
 #include <thrust/copy.h>
@@ -245,7 +246,7 @@ void CoordinateMapGPU<coordinate_type, TemplatedAllocator>::insert(
       thrust::make_tuple(m_valid_map_index.begin(), m_valid_row_index.begin()));
 
   size_type const number_of_valid =
-      thrust::remove_if(thrust::device, valid_begin,
+      thrust::remove_if(::minkowski::detail::thrust_policy(), valid_begin,
                         thrust::make_zip_iterator(thrust::make_tuple(
                             m_valid_map_index.end(), m_valid_row_index.end())),
                         detail::is_first<index_type>(unused_key)) -
@@ -310,7 +311,7 @@ void CoordinateMapGPU<coordinate_type, TemplatedAllocator>::
       m_coordinate_size};
 
   thrust::counting_iterator<uint32_t> count_begin{0};
-  thrust::for_each(thrust::device, count_begin, count_begin + N_unique, insert);
+  thrust::for_each(::minkowski::detail::thrust_policy(), count_begin, count_begin + N_unique, insert);
 }
 
 /*
@@ -340,12 +341,12 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::find(
   gpu_storage<index_type, byte_allocator_type> input_index(N);
   gpu_storage<index_type, byte_allocator_type> results(N);
   LOG_DEBUG("Initialized functors.");
-  thrust::sequence(thrust::device, input_index.begin(), input_index.end());
-  thrust::transform(thrust::device, index, index + N, results.begin(),
+  thrust::sequence(::minkowski::detail::thrust_policy(), input_index.begin(), input_index.end());
+  thrust::transform(::minkowski::detail::thrust_policy(), index, index + N, results.begin(),
                     find_functor);
 
   size_type const number_of_valid =
-      thrust::remove_if(thrust::device,
+      thrust::remove_if(::minkowski::detail::thrust_policy(),
                         thrust::make_zip_iterator(thrust::make_tuple(
                             input_index.begin(), results.begin())),
                         thrust::make_zip_iterator(thrust::make_tuple(
@@ -461,7 +462,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::stride(
       thrust::make_tuple(stride_valid_map_index.begin(), //
                          stride_valid_row_index.begin()));
   size_type const number_of_valid =
-      thrust::remove_if(thrust::device, //
+      thrust::remove_if(::minkowski::detail::thrust_policy(), //
                         valid_begin,    //
                         thrust::make_zip_iterator(
                             thrust::make_tuple(stride_valid_map_index.end(), //
@@ -672,7 +673,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::stride_region(
       thrust::make_tuple(out_valid_row_index.begin(), //
                          out_valid_map_index.begin()));
   size_type const number_of_valid =
-      thrust::remove_if(thrust::device, //
+      thrust::remove_if(::minkowski::detail::thrust_policy(), //
                         valid_begin,    //
                         thrust::make_zip_iterator(
                             thrust::make_tuple(out_valid_row_index.end(), //
@@ -765,13 +766,13 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::origin() const {
 #endif
 
   // Sort and unique
-  thrust::sort(thrust::device, d_batch_indices, d_batch_indices + N);
+  thrust::sort(::minkowski::detail::thrust_policy(), d_batch_indices, d_batch_indices + N);
 #ifdef DEBUG
   CUDA_CHECK(cudaStreamSynchronize(0));
   LOG_DEBUG("sorted batch indices");
 #endif
   auto d_batch_indices_end =
-      thrust::unique(thrust::device, d_batch_indices, d_batch_indices + N);
+      thrust::unique(::minkowski::detail::thrust_policy(), d_batch_indices, d_batch_indices + N);
   size_type const N_unique = d_batch_indices_end - d_batch_indices;
 #ifdef DEBUG
   size_t Nsize = std::min<int>(N_unique, 100);
@@ -821,7 +822,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::origin() const {
       m_coordinate_size};
 
   thrust::counting_iterator<uint32_t> count_begin{0};
-  thrust::for_each(thrust::device, count_begin, count_begin + N_unique, insert);
+  thrust::for_each(::minkowski::detail::thrust_policy(), count_begin, count_begin + N_unique, insert);
 
 #ifdef DEBUG
   CUDA_CHECK(cudaStreamSynchronize(0));
@@ -857,9 +858,9 @@ CoordinateFieldMapGPU<coordinate_type, coordinate_int_type,
           d_batch_indices, N, const_coordinate_data(), m_coordinate_size);
 
   // Sort and unique
-  thrust::sort(thrust::device, d_batch_indices, d_batch_indices + N);
+  thrust::sort(::minkowski::detail::thrust_policy(), d_batch_indices, d_batch_indices + N);
   auto d_batch_indices_end =
-      thrust::unique(thrust::device, d_batch_indices, d_batch_indices + N);
+      thrust::unique(::minkowski::detail::thrust_policy(), d_batch_indices, d_batch_indices + N);
   size_type const N_unique = d_batch_indices_end - d_batch_indices;
 
   // Create origin map
@@ -1081,7 +1082,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::prune(
   detail::typed_copy<<<GET_BLOCKS(N, CUDA_NUM_THREADS), CUDA_NUM_THREADS>>>(
       N, d_inclusive_scan, keep_begin);
   CUDA_CHECK(cudaStreamSynchronize(0));
-  thrust::inclusive_scan(thrust::device, d_inclusive_scan, d_inclusive_scan + N,
+  thrust::inclusive_scan(::minkowski::detail::thrust_policy(), d_inclusive_scan, d_inclusive_scan + N,
                          d_inclusive_scan);
   index_type N_pruned;
   CUDA_CHECK(cudaMemcpy(&N_pruned, d_inclusive_scan + N - 1, sizeof(index_type),
@@ -1116,7 +1117,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::prune(
       out_valid_map_offset.begin(), out_valid_row_index.begin()));
   size_type const number_of_valid =
       thrust::remove_if(
-          thrust::device, valid_begin,
+          ::minkowski::detail::thrust_policy(), valid_begin,
           thrust::make_zip_iterator(thrust::make_tuple(
               out_valid_map_offset.end(), out_valid_row_index.end())),
           detail::is_first<index_type>(unused_map_offset)) -
@@ -1287,7 +1288,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::merge(
                          merged_map.m_valid_row_index.begin()));
 
   size_type const number_of_valid =
-      thrust::remove_if(thrust::device, valid_begin,
+      thrust::remove_if(::minkowski::detail::thrust_policy(), valid_begin,
                         thrust::make_zip_iterator(thrust::make_tuple(
                             merged_map.m_valid_map_index.end(),
                             merged_map.m_valid_row_index.end())),
@@ -1581,7 +1582,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::kernel_map(
     auto begin = thrust::make_zip_iterator(thrust::make_tuple(ins, outs));
     auto const valid_size =
         thrust::remove_if(
-            thrust::device, begin,
+            ::minkowski::detail::thrust_policy(), begin,
             thrust::make_zip_iterator(thrust::make_tuple(ins + N, outs + N)),
             detail::is_first<index_type>(unused_key)) -
         begin;
@@ -1630,7 +1631,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::kernel_map(
     CUDA_CHECK(cudaStreamSynchronize(0));
     LOG_DEBUG("count_kernel finished");
 
-    thrust::inclusive_scan(thrust::device, d_p_count_per_thread,
+    thrust::inclusive_scan(::minkowski::detail::thrust_policy(), d_p_count_per_thread,
                            d_p_count_per_thread + num_threads,
                            d_p_count_per_thread);
 
@@ -1713,7 +1714,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::kernel_map(
     auto begin = thrust::make_zip_iterator(thrust::make_tuple(
         d_p_valid_kernel_index, d_p_valid_in_index, d_p_valid_out_index));
     auto const valid_size =
-        thrust::remove_if(thrust::device, begin,
+        thrust::remove_if(::minkowski::detail::thrust_policy(), begin,
                           thrust::make_zip_iterator(thrust::make_tuple(
                               d_p_valid_kernel_index + num_threads,
                               d_p_valid_in_index + num_threads,
@@ -1856,7 +1857,7 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::stride_map(
 
   auto begin = thrust::make_zip_iterator(thrust::make_tuple(ins, outs));
   auto const valid_size =
-      thrust::remove_if(thrust::device, begin,
+      thrust::remove_if(::minkowski::detail::thrust_policy(), begin,
                         thrust::make_zip_iterator(
                             thrust::make_tuple(ins + in_size, outs + in_size)),
                         detail::is_first<index_type>(unused_key)) -
@@ -2162,7 +2163,7 @@ std::vector<at::Tensor> interpolation_map_weight_tfield_type(
       thrust::make_zip_iterator(thrust::make_tuple(d_in_map, //
                                                    d_out_map, d_weight));
   size_type const number_of_valid =
-      thrust::remove_if(thrust::device, //
+      thrust::remove_if(::minkowski::detail::thrust_policy(), //
                         valid_begin,    //
                         thrust::make_zip_iterator(thrust::make_tuple(
                             d_in_map + num_threads, //
@@ -2242,7 +2243,7 @@ field_map_type(uint32_t const num_tfield,                //
   auto valid_begin =
       thrust::make_zip_iterator(thrust::make_tuple(d_in_map, d_out_map));
   size_type const number_of_valid =
-      thrust::remove_if(thrust::device, //
+      thrust::remove_if(::minkowski::detail::thrust_policy(), //
                         valid_begin,    //
                         thrust::make_zip_iterator(
                             thrust::make_tuple(d_in_map + num_threads, //
