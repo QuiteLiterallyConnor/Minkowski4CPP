@@ -492,7 +492,16 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/sphere.cpp
     )
 
-    foreach(tgt adaptive_tests adaptive_bench adaptive_kmap_bench sphere)
+    # Adaptive vs sparse-uniform voxelization benchmark (driver:
+    # tests/adaptive/run_adaptive_vs_uniform.py).
+    add_executable(adaptive_vs_uniform_bench
+        tests/adaptive/bench_adaptive_vs_uniform.cpp
+    )
+    target_compile_definitions(adaptive_vs_uniform_bench PRIVATE
+        MINK_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    )
+
+    foreach(tgt adaptive_tests adaptive_bench adaptive_kmap_bench sphere adaptive_vs_uniform_bench)
         target_link_libraries(${tgt} PRIVATE minkowski_cpp)
         target_include_directories(${tgt} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -512,6 +521,11 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
 
     enable_testing()
     add_test(NAME adaptive_tests COMMAND adaptive_tests)
+    # Smoke run only (tiny sizes, one repetition): keeps the benchmark building and running.
+    add_test(NAME adaptive_vs_uniform_bench_smoke
+        COMMAND adaptive_vs_uniform_bench --datasets clustered,shell
+                --methods u_coarse,u_fine,u_matched,a_roi,a_dens16,a_var
+                --points 3000 --ml-queries 200 --warmup 0 --reps 1)
 
 endif()
 
