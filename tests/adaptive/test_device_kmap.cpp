@@ -169,8 +169,9 @@ TEST(device_kmap_cuda_deterministic_mode_is_bit_reproducible) {
     auto y2 = adaptive_convolution(t, w, kc).features();
     ctx.setDeterministicAlgorithms(was, warn);
     CHECK(torch::equal(y1, y2));
-    // Without it, results agree to float32 rounding (atomics may reorder the additions).
+    // Without it, results agree to float32 accumulation rounding (atomics may reorder the
+    // additions; about 1.6e-5 observed on sm_75 for 27 slots x 8 channels).
     auto y3 = adaptive_convolution(t, w, kc).features();
-    CHECK_ALLCLOSE(y1, y3, 1e-5, 1e-5);
+    CHECK_ALLCLOSE(y1, y3, 1e-4, 1e-4);
     KernelMapCache::instance().clear();
 }
