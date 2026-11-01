@@ -143,4 +143,11 @@ TEST(manager_lifetime_cuda_global_pooling) { skip_without_cuda(); global_pooling
 TEST(manager_lifetime_cuda_broadcast) { skip_without_cuda(); broadcast(torch::kCUDA); }
 TEST(manager_lifetime_cuda_pruning) { skip_without_cuda(); pruning(torch::kCUDA); }
 TEST(manager_lifetime_cuda_instance_norm) { skip_without_cuda(); instance_norm(torch::kCUDA); }
-TEST(manager_lifetime_cuda_interpolation) { skip_without_cuda(); interpolation(torch::kCUDA); }
+TEST(manager_lifetime_cuda_interpolation) {
+    skip_without_cuda();
+#ifdef _WIN32
+    // src/spmm.cu: "spmm sparse-dense CUDA is not supported on Windows" (CUDA interpolation uses it).
+    throw mink_test::Skip("CUDA interpolation (coo_spmm) is not available on Windows");
+#endif
+    interpolation(torch::kCUDA);
+}
