@@ -5,14 +5,16 @@
 // Tolerances (all geometry is dyadic, so kernel maps are exact and only feature arithmetic
 // rounds):
 // - float64 forward vs brute force: rtol = atol = 1e-9 (different summation order only).
-// - float64 gradients vs central differences, eps = 1e-6: rtol 1e-5, atol 1e-6. Every checked
-//   map is linear (or piecewise linear away from Max ties), so the difference error is pure
-//   rounding, about 1e-16 * |loss| / eps ~ 1e-10.
+// - float64 gradients vs central differences, eps = 1e-6: rtol 1e-5, atol 1e-6 + 1e-9 * |loss|.
+//   Every checked map is linear (or piecewise linear away from Max ties), so the difference error
+//   is pure rounding, ~2.2e-16 * |loss| / eps. VolumeWeighted maps scale coarse-to-fine pairs by
+//   the volume ratio (up to 64 here), so transposed losses reach ~6e5 and absolute FD noise ~1e-4.
 // - float32 CPU vs CUDA (large topology): forward and interpolation/pooling 1e-4 / 1e-5;
 //   gradients rtol 1e-3 (feature grad atol 1e-3, weight grad atol 1e-2, since weight grads sum
 //   tens of thousands of float32 products accumulated in different orders and with atomics).
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -165,7 +167,8 @@ at::Tensor numerical_grad(const std::function<double(const at::Tensor&)>& loss, 
     return g;
 }
 
-// Autograd gradient of loss(x) w.r.t. x versus central finite differences.
+// Autograd gradient of loss(x) w.r.t. x versus central finite differences. The difference quotient
+// carries rounding error ~ |loss| * 2.2e-16 / eps, so atol grows by 1e-9 * |loss| (about 4x that).
 void check_grad(const std::function<at::Tensor(const at::Tensor&)>& loss, const at::Tensor& x0,
                 double rtol = 1e-5, double atol = 1e-6, const std::string& label = "") {
     auto x = x0.clone().set_requires_grad(true);
@@ -174,6 +177,7 @@ void check_grad(const std::function<at::Tensor(const at::Tensor&)>& loss, const 
     CHECK(x.grad().defined());
     auto num = numerical_grad([&](const at::Tensor& v) { return loss(v).item<double>(); },
                               x0.clone());
+    atol += 1e-9 * std::fabs(l.item<double>());
     if (!torch::allclose(x.grad(), num, rtol, atol)) {
         auto d = (x.grad() - num).abs();
         auto i = d.argmax().item<int64_t>();
