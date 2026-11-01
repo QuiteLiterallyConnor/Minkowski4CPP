@@ -1,12 +1,13 @@
 #include "kernel_map.hpp"
 #include "adaptive_topology.hpp"
 
+#include <algorithm>
 #include <deque>
 #include <map>
 #include <mutex>
-#include <set>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_set>
 
 namespace minkowski {
 namespace adaptive {
@@ -39,19 +40,49 @@ std::shared_ptr<const Topology> derive_output_topology(const std::shared_ptr<con
     return in;
   if (shift > 0)
     throw std::invalid_argument("output_level_shift > 0 (refining outputs) is not supported");
-  std::set<Key, bool (*)(const Key &, const Key &)> keys(detail::key_less);
-  for (const Key &k : in->keys) {
-    const int64_t l = std::max<int64_t>(static_cast<int64_t>(k.level) + shift, 0);
-    keys.insert(detail::ancestor_at(k, static_cast<uint32_t>(l)));
-  }
+  const int64_t n = in->size();
+  std::vector<Key> keys(static_cast<size_t>(n));
+  detail::parallel_blocks(n, [&](int64_t b, int64_t e) {
+    for (int64_t i = b; i < e; ++i) {
+      const Key &k = in->keys[i];
+      const int64_t l = std::max<int64_t>(static_cast<int64_t>(k.level) + shift, 0);
+      keys[i] = detail::ancestor_at(k, static_cast<uint32_t>(l));
+    }
+  });
+  // Inputs are sorted by (level, coordinates) and coarsening keeps the order within a level,
+  // so a stable sort by level only would do; a full sort keeps this independent of that.
+  std::sort(keys.begin(), keys.end(), detail::key_less);
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  // Drop keys with an ancestor in the set (only levels that hold keys can contain one).
+  std::vector<uint32_t> levels;
+  for (const Key &k : keys)
+    if (levels.empty() || levels.back() != k.level)
+      levels.push_back(k.level);
+  if (levels.size() < 2)
+    return Topology::make(in->config, std::move(keys));
+  std::unordered_set<Key, detail::KeyHash> present;
+  present.reserve(keys.size() * 2);
+  for (const Key &k : keys)
+    if (k.level != levels.back()) // the finest level is never an ancestor
+      present.insert(k);
+  const int64_t m = static_cast<int64_t>(keys.size());
+  std::vector<char> covered(static_cast<size_t>(m), 0);
+  detail::parallel_blocks(m, [&](int64_t b, int64_t e) {
+    for (int64_t i = b; i < e; ++i)
+      for (uint32_t l : levels) {
+        if (l >= keys[i].level)
+          break;
+        if (present.count(detail::ancestor_at(keys[i], l))) {
+          covered[i] = 1;
+          break;
+        }
+      }
+  });
   std::vector<Key> kept;
-  for (const Key &k : keys) {
-    bool covered = false;
-    for (uint32_t l = 0; l < k.level && !covered; ++l)
-      covered = keys.count(detail::ancestor_at(k, l)) > 0;
-    if (!covered)
-      kept.push_back(k);
-  }
+  kept.reserve(keys.size());
+  for (int64_t i = 0; i < m; ++i)
+    if (!covered[i])
+      kept.push_back(keys[i]);
   return Topology::make(in->config, std::move(kept));
 }
 
@@ -75,68 +106,99 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
     }
   }
 
-  std::vector<std::vector<int64_t>> in_k(static_cast<size_t>(nk)), out_k(static_cast<size_t>(nk));
-  std::vector<std::vector<double>> w_k(static_cast<size_t>(nk));
-
-  for (int64_t o = 0; o < out.size(); ++o) {
-    const Key &ok = out.keys[o];
-    DVec lo, hi;
-    out.bounds(ok, lo, hi);
-    const DVec s = out.size_at(ok.level);
-    double Vo = 1.0;
-    DVec c{};
-    for (int d = 0; d < D; ++d) {
-      Vo *= s[d];
-      c[d] = lo[d] + 0.5 * s[d];
-    }
-    for (int64_t k = 0; k < nk; ++k) {
-      DVec t{};
-      for (int d = 0; d < D; ++d)
-        t[d] = c[d] + offsets[k][d] * s[d];
-      if (kc.mode == AdaptiveConvMode::OverlapWeighted) {
-        DVec blo{}, bhi{};
-        for (int d = 0; d < D; ++d) {
-          blo[d] = t[d] - 0.5 * s[d];
-          bhi[d] = t[d] + 0.5 * s[d];
-        }
-        in.for_each_overlap(blo, bhi, [&](int64_t j, double ov) {
+  // Outputs are split into contiguous blocks built on separate threads. Each block keeps its
+  // own per-slot lists; concatenating them slot by slot in block order reproduces the serial
+  // order (slot, then output, then input leaf index) exactly, independent of thread count.
+  const int64_t n_out = out.size();
+  const bool overlap = kc.mode == AdaptiveConvMode::OverlapWeighted;
+  const int blocks = detail::parallel_block_count(n_out, n_out * nk * (overlap ? 4 : 1));
+  struct Lists {
+    std::vector<std::vector<int64_t>> in_k, out_k;
+    std::vector<std::vector<double>> w_k;
+  };
+  std::vector<Lists> lists(static_cast<size_t>(blocks));
+  if (n_out > 0)
+    in.node_table(); // build the shared lookup table once, before the workers start
+  const double *in_volumes = in.volumes.data_ptr<double>();
+  detail::run_parallel_blocks(n_out, blocks, [&](int b, int64_t o_begin, int64_t o_end) {
+    auto &in_k = lists[b].in_k, &out_k = lists[b].out_k;
+    auto &w_k = lists[b].w_k;
+    in_k.resize(static_cast<size_t>(nk));
+    out_k.resize(static_cast<size_t>(nk));
+    w_k.resize(static_cast<size_t>(nk));
+    for (int64_t o = o_begin; o < o_end; ++o) {
+      const Key &ok = out.keys[o];
+      DVec lo, hi;
+      out.bounds(ok, lo, hi);
+      const DVec s = out.size_at(ok.level);
+      double Vo = 1.0;
+      DVec c{};
+      for (int d = 0; d < D; ++d) {
+        Vo *= s[d];
+        c[d] = lo[d] + 0.5 * s[d];
+      }
+      for (int64_t k = 0; k < nk; ++k) {
+        DVec t{};
+        for (int d = 0; d < D; ++d)
+          t[d] = c[d] + offsets[k][d] * s[d];
+        if (overlap) {
+          DVec blo{}, bhi{};
+          for (int d = 0; d < D; ++d) {
+            blo[d] = t[d] - 0.5 * s[d];
+            bhi[d] = t[d] + 0.5 * s[d];
+          }
+          in.for_each_overlap(blo, bhi, [&](int64_t j, double ov) {
+            in_k[k].push_back(j);
+            out_k[k].push_back(o);
+            w_k[k].push_back(ov / Vo);
+          });
+        } else {
+          const int64_t j = in.find_containing(t);
+          if (j < 0)
+            continue;
           in_k[k].push_back(j);
           out_k[k].push_back(o);
-          w_k[k].push_back(ov / Vo);
-        });
-      } else {
-        const int64_t j = in.find_containing(t);
-        if (j < 0)
-          continue;
-        in_k[k].push_back(j);
-        out_k[k].push_back(o);
-        w_k[k].push_back(kc.mode == AdaptiveConvMode::VolumeWeighted
-                             ? in.volumes.data_ptr<double>()[j] / Vo
-                             : 1.0);
+          w_k[k].push_back(kc.mode == AdaptiveConvMode::VolumeWeighted ? in_volumes[j] / Vo
+                                                                       : 1.0);
+        }
       }
     }
-  }
+  });
 
   AdaptiveKernelMap m;
   m.num_kernels = nk;
   m.kernel_offsets.assign(static_cast<size_t>(nk) + 1, 0);
-  std::vector<int64_t> in_all, out_all, k_all;
-  std::vector<double> w_all;
+  // start[k * blocks + b] = position of block b's slot-k pairs in the final arrays.
+  std::vector<int64_t> start(static_cast<size_t>(nk * blocks));
+  int64_t P = 0;
   for (int64_t k = 0; k < nk; ++k) {
-    in_all.insert(in_all.end(), in_k[k].begin(), in_k[k].end());
-    out_all.insert(out_all.end(), out_k[k].begin(), out_k[k].end());
-    w_all.insert(w_all.end(), w_k[k].begin(), w_k[k].end());
-    k_all.insert(k_all.end(), in_k[k].size(), k);
-    m.kernel_offsets[k + 1] = static_cast<int64_t>(in_all.size());
+    for (int b = 0; b < blocks; ++b) {
+      start[k * blocks + b] = P;
+      P += static_cast<int64_t>(lists[b].in_k[k].size());
+    }
+    m.kernel_offsets[k + 1] = P;
   }
-  const int64_t P = static_cast<int64_t>(in_all.size());
-  auto to_t = [&](std::vector<int64_t> &v) {
-    return torch::from_blob(v.data(), {P}, torch::kInt64).clone();
-  };
-  m.in_index = to_t(in_all);
-  m.out_index = to_t(out_all);
-  m.kernel_index = to_t(k_all);
-  m.weight = torch::from_blob(w_all.data(), {P}, torch::kFloat64).clone();
+  m.in_index = torch::empty({P}, torch::kInt64);
+  m.out_index = torch::empty({P}, torch::kInt64);
+  m.kernel_index = torch::empty({P}, torch::kInt64);
+  m.weight = torch::empty({P}, torch::kFloat64);
+  int64_t *in_p = m.in_index.data_ptr<int64_t>();
+  int64_t *out_p = m.out_index.data_ptr<int64_t>();
+  int64_t *k_p = m.kernel_index.data_ptr<int64_t>();
+  double *w_p = m.weight.data_ptr<double>();
+  const int copy_blocks =
+      P >= (int64_t(1) << 18) ? static_cast<int>(std::min<int64_t>(blocks, nk)) : 1;
+  detail::run_parallel_blocks(nk, copy_blocks, [&](int, int64_t k_begin, int64_t k_end) {
+    for (int64_t k = k_begin; k < k_end; ++k)
+      for (int b = 0; b < blocks; ++b) {
+        const auto &src_in = lists[b].in_k[k];
+        const int64_t at = start[k * blocks + b];
+        std::copy(src_in.begin(), src_in.end(), in_p + at);
+        std::copy(lists[b].out_k[k].begin(), lists[b].out_k[k].end(), out_p + at);
+        std::copy(lists[b].w_k[k].begin(), lists[b].w_k[k].end(), w_p + at);
+        std::fill(k_p + at, k_p + at + static_cast<int64_t>(src_in.size()), k);
+      }
+  });
   return m;
 }
 
