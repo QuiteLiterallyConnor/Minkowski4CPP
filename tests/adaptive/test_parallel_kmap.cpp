@@ -253,3 +253,58 @@ TEST(find_containing_matches_level_probe_oracle) {
         }
     }
 }
+
+TEST(parallel_interpolate_matches_serial_oracle) {
+    std::mt19937_64 rng(5150);
+    std::uniform_real_distribution<double> u01(0.0, 1.0);
+    auto topo = random_tree(3, 4, 4, 0.3, 0.2, rng);
+    auto feats = torch::randn({topo->size(), 3}, torch::kFloat64);
+    auto x = AdaptiveSparseTensor::from_topology(topo, feats);
+    const int64_t M = 60000;  // enough points for several worker threads
+    auto pts = torch::empty({M, 3}, torch::kFloat64);
+    double* pp = pts.data_ptr<double>();
+    for (int64_t i = 0; i < M * 3; ++i) pp[i] = (u01(rng) - 0.5) * 9.0 * topo->base[i % 3];
+    const auto idx = key_index(*topo);
+    for (auto mode : {InterpMode::Nearest, InterpMode::Multilinear}) {
+        // Serial oracle with the same arithmetic and accumulation order.
+        std::vector<int64_t> pt, lf;
+        std::vector<double> w;
+        for (int64_t m = 0; m < M; ++m) {
+            DVec q{};
+            for (int d = 0; d < 3; ++d) q[d] = pp[m * 3 + d];
+            const int64_t j = oracle_containing(*topo, idx, q);
+            if (j < 0) continue;
+            if (mode == InterpMode::Nearest) {
+                pt.push_back(m);
+                lf.push_back(j);
+                w.push_back(1.0);
+                continue;
+            }
+            const DVec s = topo->size_at(topo->keys[j].level);
+            DVec lo{}, hi{};
+            for (int d = 0; d < 3; ++d) {
+                lo[d] = q[d] - 0.5 * s[d];
+                hi[d] = q[d] + 0.5 * s[d];
+            }
+            std::vector<std::pair<int64_t, double>> hits;
+            double total = 0.0;
+            topo->for_each_overlap_scan(lo, hi, [&](int64_t leaf, double ov) {
+                hits.emplace_back(leaf, ov);
+                total += ov;
+            });
+            for (auto& h : hits) {
+                pt.push_back(m);
+                lf.push_back(h.first);
+                w.push_back(h.second / total);
+            }
+        }
+        CHECK(pt.size() > 1000);
+        const int64_t n = static_cast<int64_t>(pt.size());
+        auto expected = torch::zeros({M, 3}, torch::kFloat64);
+        expected.index_add_(0, torch::from_blob(pt.data(), {n}, torch::kInt64).clone(),
+                            feats.index_select(0, torch::from_blob(lf.data(), {n}, torch::kInt64).clone()) *
+                                torch::from_blob(w.data(), {n}, torch::kFloat64).clone().unsqueeze(1));
+        auto got = interpolate(x, pts, mode);
+        CHECK(torch::equal(got, expected));
+    }
+}
