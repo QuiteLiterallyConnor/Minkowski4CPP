@@ -85,6 +85,7 @@ struct Args {
   bool drop_empty = false; // also run the a_* methods with drop_empty (if supported)
   bool mink = true;
   bool sphere = false;
+  bool interleave = false; // also time fwd and fwd+bwd alternately within one loop
   std::string data_dir = MINK_TEST_DATA_DIR;
   std::string jsonl;
 };
@@ -128,6 +129,7 @@ Args parse(int argc, char **argv) {
     else if (k == "--drop-empty") a.drop_empty = true;
     else if (k == "--no-mink") a.mink = false;
     else if (k == "--sphere") a.sphere = true;
+    else if (k == "--interleave") a.interleave = true;
     else {
       std::cerr << "unknown argument " << k << "\n";
       std::exit(2);
@@ -611,6 +613,39 @@ void time_adaptive(const ad::AdaptiveSparseTensor &t, const at::Tensor &feats_cp
         wg.mutable_grad() = at::Tensor();
       },
       [&] { ad::adaptive_convolution(tg, wg, kc).features().sum().backward(); }));
+  if (a.interleave) {
+    // fwd, fwd+bwd, fwd, fwd+bwd, ... in one loop: both see the same allocator / clock state.
+    std::vector<double> tf, tb;
+    for (int i = 0; i < a.warmup + a.reps; ++i) {
+      sync(cuda);
+      auto t0 = Clock::now();
+      ad::adaptive_convolution(tt, w, kc);
+      sync(cuda);
+      const double f_ms = ms_since(t0);
+      fg.mutable_grad() = at::Tensor();
+      wg.mutable_grad() = at::Tensor();
+      sync(cuda);
+      t0 = Clock::now();
+      ad::adaptive_convolution(tg, wg, kc).features().sum().backward();
+      sync(cuda);
+      const double b_ms = ms_since(t0);
+      if (i >= a.warmup) {
+        tf.push_back(f_ms);
+        tb.push_back(b_ms);
+      }
+    }
+    auto stat = [](std::vector<double> t) {
+      std::sort(t.begin(), t.end());
+      const size_t n = t.size();
+      Stat s;
+      s.med = n % 2 ? t[n / 2] : 0.5 * (t[n / 2 - 1] + t[n / 2]);
+      s.min = t.front();
+      s.max = t.back();
+      return s;
+    };
+    out["interleaved_fwd_ms"] = to_json(stat(tf));
+    out["interleaved_fwd_bwd_ms"] = to_json(stat(tb));
+  }
   ad::KernelMapCache::instance().clear();
 }
 
