@@ -150,6 +150,61 @@ TEST(gradient_refine_split_and_coarsen_sum_are_linear) {
     CHECK(torch::isfinite(f.grad()).all().item<bool>());
 }
 
+TEST(gradient_resample_to_all_reductions) {
+    // Source with uneven depth and partial occupancy inside level-0 cell (1,0,0): one level-1
+    // leaf, two level-2 leaves of a second level-1 cell and one level-1 leaf elsewhere.
+    std::vector<std::array<int64_t, 4>> v = {{0, 0, 0, 0}, {2, 0, 0, 1}, {6, 0, 0, 2},
+                                             {7, 1, 1, 2}, {3, 1, 1, 1}, {0, 1, 0, 0}};
+    const int64_t n = v.size();
+    auto c = torch::zeros({n, 3}, torch::kInt64);
+    auto l = torch::zeros({n}, torch::kInt32);
+    for (int64_t i = 0; i < n; ++i) {
+        for (int d = 0; d < 3; ++d) c[i][d] = v[i][d];
+        l[i] = int(v[i][3]);
+    }
+    torch::manual_seed(9);
+    auto src = AdaptiveSparseTensor::from_voxels(c, l, torch::randn({n, 2}, torch::kFloat64),
+                                                 make_config());
+    // Reference: (1,0,0)@0 reduces four finer leaves, the children of (0,0,0)@0 replicate it,
+    // (0,1,0)@0 matches exactly and (5,0,0)@0 is uncovered.
+    std::vector<std::array<int64_t, 4>> rv = {{1, 0, 0, 0}, {0, 1, 0, 0}, {5, 0, 0, 0}};
+    for (int i = 0; i < 8; ++i) rv.push_back({i & 1, (i >> 1) & 1, (i >> 2) & 1, 1});
+    const int64_t m = rv.size();
+    auto rc = torch::zeros({m, 3}, torch::kInt64);
+    auto rl = torch::zeros({m}, torch::kInt32);
+    for (int64_t i = 0; i < m; ++i) {
+        for (int d = 0; d < 3; ++d) rc[i][d] = rv[i][d];
+        rl[i] = int(rv[i][3]);
+    }
+    auto ref = AdaptiveSparseTensor::from_voxels(rc, rl, torch::zeros({m, 1}, torch::kFloat64),
+                                                 make_config());
+    auto probe = torch::randn({m, 2}, torch::kFloat64);
+    auto feats0 = src.features().clone();
+    for (auto r : {Reduction::Mean, Reduction::Sum, Reduction::Max}) {
+        auto f = feats0.clone().set_requires_grad(true);
+        (src.with_features(f).resample_to(ref, r).features() * probe).sum().backward();
+        auto num = numerical_grad(
+            [&](const at::Tensor& x) {
+                return (src.with_features(x).resample_to(ref, r).features() * probe)
+                    .sum()
+                    .item<double>();
+            },
+            feats0.clone());
+        CHECK_ALLCLOSE(f.grad(), num, 1e-5, 1e-6);
+    }
+    // Mean weights of the four leaves under (1,0,0)@0 follow coarsen(): (2,0,0)@1 and (3,1,1)@1
+    // and the level-1 cell (3,0,0)@1 holding (6,0,0)@2 and (7,1,1)@2 each count 1/3, the two
+    // level-2 leaves 1/6 each.
+    auto f = feats0.clone().set_requires_grad(true);
+    auto out = src.with_features(f).resample_to(ref, Reduction::Mean);
+    out.features()[ref.index_of({1, 0, 0}, 0)][0].backward();
+    auto g = f.grad().select(1, 0);
+    CHECK_NEAR(g[src.index_of({2, 0, 0}, 1)].item<double>(), 1.0 / 3.0, 1e-12);
+    CHECK_NEAR(g[src.index_of({3, 1, 1}, 1)].item<double>(), 1.0 / 3.0, 1e-12);
+    CHECK_NEAR(g[src.index_of({6, 0, 0}, 2)].item<double>(), 1.0 / 6.0, 1e-12);
+    CHECK_NEAR(g[src.index_of({7, 1, 1}, 2)].item<double>(), 1.0 / 6.0, 1e-12);
+}
+
 TEST(gradient_topology_decisions_are_not_differentiable) {
     auto base = make_mixed(2);
     CHECK(!base.coordinates().requires_grad());
