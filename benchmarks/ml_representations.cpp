@@ -16,6 +16,7 @@
 // the model initialization and the shuffling order.
 //
 //   ml_representations --method uniform --seed 1 --epochs 12 --output run.json
+// --device cuda (default) requires CUDA; cpu is explicit, and auto permits fallback.
 //
 // Writes a JSON record (per-epoch loss/accuracy/time, final accuracy, macro
 // precision/recall/F1, train time, inference latency/throughput, peak CUDA and
@@ -675,6 +676,8 @@ int main(int argc, char **argv) {
   uint64_t data_seed = 2026;
   int64_t density_threshold = 12;
   double lr = 1e-3;
+  if ((argc - 1) % 2 != 0)
+    throw std::invalid_argument("Arguments must be option/value pairs");
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string a = argv[i], v = argv[i + 1];
     if (a == "--method")
@@ -707,7 +710,15 @@ int main(int argc, char **argv) {
   if (method != "uniform" && method != "adaptive" && method != "gaussian" &&
       method != "adaptive_gaussian")
     throw std::invalid_argument("--method uniform|adaptive|gaussian|adaptive_gaussian");
-  const torch::Device dev = device_s == "cuda" && torch::cuda::is_available()
+  if (batch_size < 2)
+    throw std::invalid_argument("--batch must be at least 2 for training with BatchNorm");
+  if (device_s != "cpu" && device_s != "cuda" && device_s != "auto")
+    throw std::invalid_argument("--device cpu|cuda|auto");
+  const bool cuda_available = device_s != "cpu" && torch::cuda::is_available();
+  if (device_s == "cuda" && !cuda_available)
+    throw std::runtime_error("--device cuda requested but CUDA is unavailable; use --device cpu "
+                             "or --device auto only when CPU execution is intended");
+  const torch::Device dev = device_s != "cpu" && cuda_available
                                 ? torch::Device(torch::kCUDA)
                                 : torch::Device(torch::kCPU);
   const bool adaptive_like = method == "adaptive" || method == "adaptive_gaussian";
@@ -870,6 +881,7 @@ int main(int argc, char **argv) {
   double train_s = 0;
   for (const auto &ej : epochs_j)
     train_s += ej["epoch_train_s"].get<double>();
+  // These legacy *_train output fields cover the whole epoch loop, including evaluation.
   const double train_peak_alloc = cuda_peak_mb(false), train_peak_res = cuda_peak_mb(true);
   (void)t_train0;
 
@@ -945,7 +957,13 @@ int main(int argc, char **argv) {
             {"active_elements_max", *std::max_element(active.begin(), active.end())},
             {"level_histogram_train", level_hist},
             {"curve", epochs_j}};
-  std::ofstream(output) << j.dump(1) << "\n";
+  std::ofstream result_file(output);
+  if (!result_file)
+    throw std::runtime_error("Cannot open result output: " + output);
+  result_file << j.dump(1) << "\n";
+  result_file.close();
+  if (!result_file)
+    throw std::runtime_error("Failed to write result output: " + output);
   std::cout << method << " seed " << seed << " acc " << acc << " macroF1 " << f_sum / kClasses
             << " train_s " << train_s << " active " << active_mean << " params " << nparams
             << std::endl;
