@@ -19,7 +19,7 @@ import sys
 import time
 
 DATASETS = "uniform,clustered,shell,ply,scan"
-METHODS = "none,u_coarse,u_fine,u_matched,a_roi,a_dens4,a_dens16,a_dens64,a_var"
+METHODS = "none,u_coarse,u_fine,u_matched,a_roi,a_dens4,a_dens16,a_dens64,a_var,a_fnorm"
 
 
 def flatten(d, prefix=""):

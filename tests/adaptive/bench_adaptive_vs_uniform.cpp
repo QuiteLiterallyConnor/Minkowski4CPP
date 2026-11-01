@@ -5,10 +5,12 @@
 // refine_by_density, refine_by_variance) on several deterministic point sets, and reports
 // voxel counts, bytes, kernel-map build time, convolution forward / forward+backward time
 // (adaptive engine for every method, MinkowskiEngine sparse convolution for the uniform ones),
-// held-out interpolation error against the reference values, and peak RAM / VRAM.
+// held-out interpolation error against the reference values, peak RAM / VRAM, and the cost of
+// collapsing a tree (coarsen to level 0) for dynamic-topology use. a_fnorm refines by the norm of
+// a fixed random convolution response (stand-in for a learned importance criterion).
 //
 //   adaptive_vs_uniform_bench [--datasets uniform,clustered,shell,ply,scan]
-//       [--methods u_coarse,u_fine,u_matched,a_roi,a_dens4,a_dens16,a_dens64,a_var]
+//       [--methods u_coarse,u_fine,u_matched,a_roi,a_dens4,a_dens16,a_dens64,a_var,a_fnorm]
 //       [--devices cpu,cuda] [--depth 4] [--base 8] [--points 100000] [--channels 16]
 //       [--queries 20000] [--ml-queries 2000] [--warmup 2] [--reps 5] [--seed 0]
 //       [--var-rel 0.05] [--data-dir DIR] [--jsonl FILE] [--no-mink] [--sphere]
@@ -477,6 +479,29 @@ Built build_method(const std::string &method, const Dataset &d, const Args &a,
     const int64_t k = std::stoll(method.substr(6));
     b.refine_threshold = double(k);
     b.t->refine_by_density(k MINK_DROP);
+  } else if (method == "a_fnorm") {
+    // Feature-response importance (stand-in for a learned criterion): a fixed random 3^3 conv
+    // over the current leaf values; each pass refines the leaves whose response norm is in the
+    // top 10 % by one level, then re-voxelizes, for max_depth passes.
+    torch::manual_seed(a.seed + 7);
+    const int64_t V = d.train_vals.size(1);
+    auto w = torch::randn({27, V, V}, torch::kFloat64) / std::sqrt(27.0 * double(V));
+    for (uint32_t pass = 0; pass < a.depth; ++pass) {
+      revoxelize_keep_parent(*b.t, P);
+      auto y = ad::adaptive_convolution(*b.t, w, ad::AdaptiveKernelConfig{});
+      auto score = y.features().pow(2).sum(1).sqrt().contiguous();
+      const double thr = torch::quantile(score, 0.9).item<double>();
+      b.refine_threshold = thr;
+      const double *sp = score.data_ptr<double>();
+      const ad::AdaptiveSparseTensor *tp = &*b.t;
+      const uint64_t version = b.t->topology_version();
+      // Only the first refine_if pass (the topology the scores belong to) selects leaves.
+      b.t->refine_if(
+          [&](int64_t i, const std::array<double, 4> &, const std::array<double, 4> &, uint32_t) {
+            return tp->topology_version() == version && sp[i] > thr;
+          } MINK_DROP);
+      ad::KernelMapCache::instance().clear();
+    }
   } else if (method == "a_var") {
     const double var = d.train_vals.var(0).mean().item<double>();
     b.refine_threshold = a.var_rel * var;
@@ -860,6 +885,14 @@ int main(int argc, char **argv) {
           j["refine_threshold"] = b.refine_threshold;
         if (!b.roi_lo.empty())
           j["roi"] = {b.roi_lo, b.roi_hi};
+        if (!b.uniform) {
+          // Dynamic-topology cost: collapse the tree back to level 0 (a full re-refinement then
+          // costs build_ms again, and every topology change needs a cold kernel map).
+          std::optional<ad::AdaptiveSparseTensor> c;
+          j["coarsen_all_ms"] = to_json(measure(
+              std::min(a.warmup, 1), std::min(a.reps, 3), false, [&] { c = t; },
+              [&] { c->coarsen(ad::AxisAlignedRegion::everything(3), 0, ad::Reduction::Mean); }));
+        }
         // Covered physical volume (sum of leaf volumes) and bytes.
         j["covered_volume"] = t.volumes().sum().item<double>();
         j["feature_bytes"] = t.size() * a.channels * int64_t(sizeof(float));
