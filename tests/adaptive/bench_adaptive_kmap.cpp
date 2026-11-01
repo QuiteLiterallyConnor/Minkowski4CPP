@@ -210,8 +210,9 @@ int run_conv(const Args& a, const AdaptiveSparseTensor& t_cpu) {
 #ifdef USE_CUDA
     if (dev.is_cuda()) {
         const auto st = c10::cuda::CUDACachingAllocator::getDeviceStats(dev.index() < 0 ? 0 : dev.index());
-        using c10::CachingAllocator::StatType;
-        const auto agg = static_cast<size_t>(StatType::AGGREGATE);
+        // c10::CachingDeviceAllocator names StatType in LibTorch 2.5 (CUDA 12.4
+        // profile) and re-exports c10::CachingAllocator's in 2.15.
+        const auto agg = static_cast<size_t>(c10::CachingDeviceAllocator::StatType::AGGREGATE);
         print("cuda_max_alloc_mb", st.allocated_bytes[agg].peak / 1048576.0);
         print("cuda_max_reserved_mb", st.reserved_bytes[agg].peak / 1048576.0);
     }
