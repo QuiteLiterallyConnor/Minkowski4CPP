@@ -16,7 +16,16 @@
 
 #include <torch/torch.h>
 #ifndef CPU_ONLY
+#include <c10/cuda/CUDACachingAllocator.h>
 #include <torch/cuda.h>
+#endif
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
 #endif
 
 #include "MinkowskiEngine/minkowski.hpp"
@@ -40,13 +49,23 @@ void sync(bool cuda) {
 #endif
 }
 
+// Peak working set of this process in MiB (0 where unsupported).
+double peak_rss_mib() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+        return double(pmc.PeakWorkingSetSize) / (1024.0 * 1024.0);
+#endif
+    return 0.0;
+}
+
 double ms_since(clk::time_point t0) {
     return std::chrono::duration<double, std::milli>(clk::now() - t0).count();
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
     std::string device = "cpu";
     int64_t points = 50000, extent = 96, batches = 2, cin = 32, cout = 32, stride = 1;
     int warmup = 2, repeats = 7;
@@ -88,11 +107,12 @@ int main(int argc, char** argv) {
         parts.push_back(c);
     }
     auto coords = torch::cat(parts).to(torch::kInt32).to(dev);
-    auto feats = torch::randn({coords.size(0), cin}, dtype).to(dev).requires_grad_(true);
-
     const int threads_before = at::get_num_threads();
-    SparseTensor x(feats, coords);
+    SparseTensor quantized(torch::randn({coords.size(0), cin}, dtype).to(dev), coords);
     const int threads_after = at::get_num_threads();
+    // Leaf features on the quantized coordinate map: every iteration builds a fresh graph.
+    auto feats = quantized.F().detach().clone().requires_grad_(true);
+    SparseTensor x(feats, quantized.coordinate_map_key(), quantized.coordinate_manager());
 
     MinkowskiConvolution conv(cin, cout, 3, stride, 1, false, false, ConvolutionMode::DEFAULT, 3);
     conv->to(dev, dtype);
@@ -129,8 +149,28 @@ int main(int argc, char** argv) {
     std::cout << "fwd_ms  " << median(fwd) << "\n";
     std::cout << "bwd_ms  " << median(bwd) << "\n";
     std::cout << "fwd_bwd_ms  " << median(total) << "\n";
+    std::cout << "fwd_bwd_min_ms  " << *std::min_element(total.begin(), total.end()) << "\n";
+    std::cout << "fwd_bwd_max_ms  " << *std::max_element(total.begin(), total.end()) << "\n";
+    std::cout << "peak_rss_mib  " << peak_rss_mib() << "\n";
+#ifndef CPU_ONLY
+    if (cuda) {
+        const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(dev.index() < 0 ? 0 : dev.index());
+        std::cout << "cuda_peak_allocated_mib  " << double(stats.allocated_bytes[0].peak) / (1024.0 * 1024.0) << "\n";
+        std::cout << "cuda_peak_reserved_mib  " << double(stats.reserved_bytes[0].peak) / (1024.0 * 1024.0) << "\n";
+    }
+#endif
     std::cout << "# per-iteration fwd_bwd_ms:";
     for (double t : total) std::cout << " " << t;
     std::cout << "\n";
     return 0;
+}
+
+int main(int argc, char** argv) {
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        std::cout.flush();
+        std::cerr << "core_conv_bench: error: " << e.what() << "\n";
+        return 1;
+    }
 }
