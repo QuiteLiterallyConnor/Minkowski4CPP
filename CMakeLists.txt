@@ -454,6 +454,7 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_overlap_descent.cpp
         tests/adaptive/test_parallel_kmap.cpp
         tests/adaptive/test_drop_empty.cpp
+        tests/adaptive/test_interp_fallback.cpp
     )
 
     add_executable(adaptive_bench

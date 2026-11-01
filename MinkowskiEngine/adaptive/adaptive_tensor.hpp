@@ -86,7 +86,8 @@ public:
   // the default result with its point-free leaves removed (same keys and features for the
   // remaining leaves). The cost is one point-to-leaf pass per refinement step. Uncovered
   // space (dropped children) behaves like any unoccupied region: interpolate() returns
-  // zeros there and convolutions see no neighbour.
+  // zeros there (or the mean of the finest occupied ancestor cell with
+  // InterpFallback::CoarserAncestor) and convolutions see no neighbour.
   void refine(const AxisAlignedRegion &region, uint32_t target_level,
               RefinePolicy policy = RefinePolicy::Replicate, bool drop_empty = false);
   // Merges leaves into ancestors down to target_level, bottom-up, for every

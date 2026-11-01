@@ -143,7 +143,11 @@ auto uniform = t.resample_uniform(2);
 ```
 
 Nearest interpolation returns the containing leaf's value. Queries outside
-every leaf return zeros. `other.resample_to(t)` aligns another tensor to
+every leaf return zeros, or with
+`interpolate(t, query, mode, InterpFallback::CoarserAncestor)` the
+volume-weighted mean of the leaves inside the finest cell that contains the
+query and at least one leaf (useful after `drop_empty` refinement, which leaves
+point-free children uncovered). `other.resample_to(t)` aligns another tensor to
 `t`'s leaves; addition requires identical topology.
 
 Uniform resampling can expand a sparse hierarchy dramatically. The
