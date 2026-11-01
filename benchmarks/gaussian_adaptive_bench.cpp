@@ -2,7 +2,8 @@
 // versus the number of Gaussians.
 //
 //   gaussian_adaptive_bench [--device cpu|cuda|both] [--counts 1000,10000,...]
-//                           [--repeats 5] [--warmup 2] [--output results.csv]
+//                           [--repeats 5] [--warmup 2] [--box-max-n 10000]
+//                           [--splat center|box|both] [--output results.csv]
 //
 // Scene: N Gaussians, positions uniform in [0, 64)^3, log-uniform axis scales in
 // [0.02, 2], random rotations, float32, seed 1234; config base 64, max_depth 8.
@@ -136,8 +137,12 @@ std::vector<int64_t> parse_counts(const std::string &s) {
 
 int main(int argc, char **argv) {
   std::string device = "both", output = "gaussian_adaptive_bench.csv";
-  std::vector<int64_t> counts{1000, 10000, 100000, 1000000};
+  // 1e6 is opt-in: with mixed scales a coarse Gaussian gets one entry per fine
+  // leaf it covers (1e6 Gaussians -> ~1.2e8 entries, > 100 s and ~8 GB on CPU).
+  std::vector<int64_t> counts{1000, 10000, 100000};
   int repeats = 5, warmup = 2;
+  int64_t box_max_n = 10000;
+  std::string splats = "both";
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string a = argv[i], v = argv[i + 1];
     if (a == "--device")
@@ -150,6 +155,10 @@ int main(int argc, char **argv) {
       warmup = std::stoi(v);
     else if (a == "--output")
       output = v;
+    else if (a == "--box-max-n")
+      box_max_n = std::stoll(v);
+    else if (a == "--splat")
+      splats = v;
   }
   std::vector<torch::Device> devices;
   if (device == "cpu" || device == "both")
@@ -161,17 +170,25 @@ int main(int argc, char **argv) {
   cfg.base_voxel_size = {64.0, 64.0, 64.0};
   cfg.max_depth = 8;
 
-  std::ofstream csv(output);
+  bool fresh = true;
+  {
+    std::ifstream existing(output);
+    fresh = !existing || existing.peek() == std::ifstream::traits_type::eof();
+  }
+  std::ofstream csv(output, std::ios::app); // one file across separate CPU / CUDA runs
   const std::string header =
       "device,splat,n,leaves,entries,op,median_ms,min_ms,max_ms,gaussians_per_s,"
       "cuda_peak_alloc_mb,peak_rss_mb";
-  csv << header << "\n";
+  if (fresh)
+    csv << header << "\n";
   std::cout << header << "\n";
   for (const auto &dev : devices) {
     for (auto splat : {GaussianSplat::Center, GaussianSplat::BoxIntegral}) {
       for (int64_t n : counts) {
-        if (splat == GaussianSplat::BoxIntegral && n > 250000)
-          continue; // ~40-60 entries per Gaussian; keep the run short
+        if (splat == GaussianSplat::BoxIntegral && (n > box_max_n || splats == "center"))
+          continue; // tens of entries per Gaussian; keep each run short
+        if (splat == GaussianSplat::Center && splats == "box")
+          continue;
         auto g = scene(n, dev);
         GaussianToAdaptiveOptions o;
         o.splat = splat;
@@ -215,7 +232,7 @@ int main(int argc, char **argv) {
               << std::setprecision(3) << s.median << "," << s.min << "," << s.max << ","
               << std::setprecision(0) << (1000.0 * static_cast<double>(n) / s.median) << ","
               << std::setprecision(1) << cuda_peak_mb() << "," << peak_rss_mb();
-          csv << row.str() << "\n";
+          csv << row.str() << std::endl; // flushed: partial runs keep their rows
           std::cout << row.str() << std::endl;
         }
       }
