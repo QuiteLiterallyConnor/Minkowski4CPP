@@ -88,6 +88,12 @@ bool cuda_has_active_ancestor(const std::vector<Key> &keys,
 // Calls f(begin, end) over disjoint blocks covering [0, n), on several threads for large n.
 // The first exception thrown by f is rethrown after all blocks finish.
 void parallel_blocks(int64_t n, const std::function<void(int64_t, int64_t)> &f);
+// For loops with expensive items: the number of blocks (threads) worth using when the loop
+// over n items costs about `work` cheap steps in total, and a runner that calls
+// f(block, begin, end) for block b = [n * b / blocks, n * (b + 1) / blocks) on one thread each.
+int parallel_block_count(int64_t n, int64_t work);
+void run_parallel_blocks(int64_t n, int blocks,
+                         const std::function<void(int, int64_t, int64_t)> &f);
 
 struct Topology {
   uint64_t id = 0;
@@ -142,20 +148,26 @@ struct Topology {
   }
 
   int64_t find(const Key &k) const {
-    const auto &index = index_map();
-    auto it = index.find(k);
-    return it == index.end() ? -1 : it->second;
+    if (keys.empty())
+      return -1;
+    const int64_t v = node_table().lookup(k);
+    return v >= 0 ? v : -1;
   }
 
-  // The active leaf that owns point p, or -1 (leaves never overlap).
+  // The active leaf that owns point p, or -1 (leaves never overlap). Probes the cells
+  // containing p from the coarsest present level down; a cell that is neither a leaf nor an
+  // ancestor of one ends the search, since every finer cell containing p lies inside it.
   int64_t find_containing(const DVec &p) const {
+    if (keys.empty())
+      return -1;
+    const NodeTable &nodes = node_table();
     Key k;
     for (uint32_t l : present_levels) {
       if (!locate(p, l, k))
         return -1;
-      const int64_t j = find(k);
-      if (j >= 0)
-        return j;
+      const int64_t v = nodes.lookup(k);
+      if (v != NodeTable::kInternal)
+        return v; // leaf index, or kEmpty (-1)
     }
     return -1;
   }
