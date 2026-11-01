@@ -64,6 +64,50 @@ struct SphereGeometry {
     const double size = cell_size(level);
     return occupied(x, y, z, level) ? size * size * size : 0.0;
   }
+
+  // Columns per axis of the (x, y) quadrature in inside_volume.
+  static constexpr int kColumns = 8;
+
+  // Volume of the cell that lies inside the sphere: exact along z, kColumns x kColumns
+  // midpoint quadrature over (x, y). Never exceeds the cell volume.
+  MINK_SPHERE_HD double inside_volume(int64_t x, int64_t y, int64_t z, int level) const {
+    const double size = cell_size(level);
+    const double step = size / kColumns;
+    const double z0 = static_cast<double>(z) * size - r;
+    const double z1 = z0 + size;
+    double length = 0.0;
+    for (int i = 0; i < kColumns; ++i) {
+      const double dx = static_cast<double>(x) * size + (i + 0.5) * step - r;
+      for (int j = 0; j < kColumns; ++j) {
+        const double dy = static_cast<double>(y) * size + (j + 0.5) * step - r;
+        const double h2 = r * r - dx * dx - dy * dy;
+        if (h2 <= 0.0)
+          continue;
+        const double h = sqrt(h2);
+        const double lo = z0 > -h ? z0 : -h;
+        const double hi = z1 < h ? z1 : h;
+        if (hi > lo)
+          length += hi - lo;
+      }
+    }
+    return length * step * step;
+  }
+
+  // Estimated volume of the cell whose occupancy disagrees with the sphere: the part outside
+  // the sphere for an occupied leaf, the part inside for an empty one. Exactly 0 for cells
+  // fully inside or outside (their occupancy is exact).
+  MINK_SPHERE_HD double misclassified_volume(int64_t x, int64_t y, int64_t z, int level) const {
+    if (!is_boundary(x, y, z, level))
+      return 0.0;
+    const double size = cell_size(level);
+    const double inside = inside_volume(x, y, z, level);
+    return occupied(x, y, z, level) ? size * size * size - inside : inside;
+  }
+
+  // Accuracy from the misclassified (symmetric-difference) volume.
+  MINK_SPHERE_HD double geometric_accuracy(double misclassified) const {
+    return 100.0 * (1.0 - misclassified / exact_volume());
+  }
 };
 
 } // namespace sphere_detail
