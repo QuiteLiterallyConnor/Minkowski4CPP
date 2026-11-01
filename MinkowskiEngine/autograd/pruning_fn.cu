@@ -1,5 +1,6 @@
 
 #include "pruning_fn.hpp"
+#include "manager_holder.hpp"
 
 namespace minkowski {
 
@@ -56,7 +57,7 @@ at::Tensor PruningFunction::forward(
   ctx->saved_data["out_key_str_id"] = out_key->get_key().second;
   ctx->saved_data["in_key_coord_size"] = static_cast<int64_t>(in_key->get_coordinate_size());
   ctx->saved_data["out_key_coord_size"] = static_cast<int64_t>(out_key->get_coordinate_size());
-  ctx->saved_data["manager_ptr"] = reinterpret_cast<int64_t>(manager.get());
+  ctx->saved_data["manager"] = autograd_detail::pack_manager(manager);
 
   return out_feat;
 }
@@ -72,8 +73,9 @@ torch::autograd::variable_list PruningFunction::backward(
     {unpack_stride(ctx->saved_data["out_key_stride"]),
      ctx->saved_data["out_key_str_id"].toStringRef()});
 
-  auto *manager = reinterpret_cast<CoordinateManager *>(
-      ctx->saved_data["manager_ptr"].toInt());
+  const auto manager_ref =
+      autograd_detail::unpack_manager(ctx->saved_data["manager"]);
+  auto *manager = manager_ref.get();
 
   at::Tensor grad_out_feat = grad_outputs[0].contiguous();
   at::Tensor grad_in_feat;
