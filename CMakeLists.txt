@@ -620,7 +620,8 @@ if(MINK_BUILD_ML_EXPERIMENTS AND MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
         "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+        # third_party/json.hpp lives in tests/third_party
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
     )
     if(MINK_TORCH_CXX_FLAGS)
         target_compile_options(ml_representations PRIVATE
