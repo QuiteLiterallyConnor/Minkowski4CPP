@@ -77,6 +77,7 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
 
   std::vector<std::vector<int64_t>> in_k(static_cast<size_t>(nk)), out_k(static_cast<size_t>(nk));
   std::vector<std::vector<double>> w_k(static_cast<size_t>(nk));
+  std::vector<std::pair<int64_t, double>> avg; // CenterAveraged scratch
 
   for (int64_t o = 0; o < out.size(); ++o) {
     const Key &ok = out.keys[o];
@@ -106,6 +107,27 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
         });
       } else {
         const int64_t j = in.find_containing(t);
+        if (kc.mode == AdaptiveConvMode::CenterAveraged &&
+            (j < 0 || in.keys[j].level > ok.level)) {
+          // The tap cell is split into finer leaves (or empty at this level): average them.
+          DVec blo{}, bhi{};
+          for (int d = 0; d < D; ++d) {
+            blo[d] = t[d] - 0.5 * s[d];
+            bhi[d] = t[d] + 0.5 * s[d];
+          }
+          avg.clear();
+          double total = 0.0;
+          in.for_each_overlap(blo, bhi, [&](int64_t i, double ov) {
+            avg.emplace_back(i, ov);
+            total += ov;
+          });
+          for (const auto &h : avg) {
+            in_k[k].push_back(h.first);
+            out_k[k].push_back(o);
+            w_k[k].push_back(h.second / total);
+          }
+          continue;
+        }
         if (j < 0)
           continue;
         in_k[k].push_back(j);
