@@ -180,6 +180,30 @@ endif()
 
 set(MINK_GPU_SOURCES)
 
+# These translation units carry the autograd functions and the coordinate
+# manager for both backends; their CUDA paths are guarded by CPU_ONLY, so a
+# CPU-only build compiles them as C++ instead of dropping them.
+set(MINK_DUAL_BACKEND_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/coordinate_manager.cu"
+)
+file(GLOB MINK_AUTOGRAD_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/autograd/*.cu"
+)
+list(APPEND MINK_DUAL_BACKEND_SOURCES ${MINK_AUTOGRAD_SOURCES})
+
+if(CPU_ONLY)
+    set_source_files_properties(${MINK_DUAL_BACKEND_SOURCES}
+        PROPERTIES LANGUAGE CXX)
+    if(MSVC)
+        set_source_files_properties(${MINK_DUAL_BACKEND_SOURCES}
+            PROPERTIES COMPILE_OPTIONS "/TP")
+    else()
+        set_source_files_properties(${MINK_DUAL_BACKEND_SOURCES}
+            PROPERTIES COMPILE_OPTIONS "-xc++")
+    endif()
+    list(APPEND MINK_CPU_SOURCES ${MINK_DUAL_BACKEND_SOURCES})
+endif()
+
 if(NOT CPU_ONLY)
 
     file(GLOB MINK_GPU_SOURCES CONFIGURE_DEPENDS
