@@ -128,7 +128,7 @@ for registration and `forward` composition.
 | `AdaptiveKernelConfig`, `AdaptiveConvMode` | Mixed-resolution kernel behavior |
 | `adaptive_convolution`, `adaptive_convolution_transpose` | Differentiable feature kernels |
 | `adaptive_pool`, `adaptive_global_avg_pool` | Local/global reductions |
-| `interpolate`, `InterpMode` | Nearest or multilinear queries |
+| `interpolate`, `InterpMode` | Nearest, multilinear or continuous multilinear queries |
 | `resample_uniform`, `resample_to` | Resolution/topology alignment |
 | `KernelMapCache::instance()` | Cache statistics and clearing |
 

@@ -9,7 +9,8 @@
 // Prints "key   value" lines; times are median / min / max over --reps after --warmup runs.
 //  kmap_<mode>_cold_ms : first map build on a freshly created topology (lazy indices included)
 //  kmap_<mode>_warm_ms : map build on a topology whose lazy indices already exist
-//  interp_multilinear_ms / interp_nearest_ms : interpolate() at --interp random points
+//  interp_multilinear_ms / interp_nearest_ms / interp_continuous_ms : interpolate() at --interp
+//    random points (continuous = InterpMode::ContinuousMultilinear)
 // With --conv cpu|cuda the kernel-map/interp parts are skipped and adaptive_convolution is
 // timed instead, with the kernel map already cached (the steady state of a training loop):
 //  conv_<mode>_first_ms   : first convolution after the map was built (uploads included)
@@ -293,6 +294,8 @@ int main(int argc, char** argv) {
         report("interp_multilinear", a, [] {},
                [&] { interpolate(t, q, InterpMode::Multilinear); });
         report("interp_nearest", a, [] {}, [&] { interpolate(t, q, InterpMode::Nearest); });
+        report("interp_continuous", a, [] {},
+               [&] { interpolate(t, q, InterpMode::ContinuousMultilinear); });
     }
     print_peak_ws();
     return 0;
