@@ -448,17 +448,22 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_gradients.cpp
         tests/adaptive/test_regression.cpp
         tests/adaptive/test_sphere.cpp
+        tests/adaptive/test_overlap_descent.cpp
     )
 
     add_executable(adaptive_bench
         tests/adaptive/bench_adaptive.cpp
     )
 
+    add_executable(adaptive_kmap_bench
+        tests/adaptive/bench_adaptive_kmap.cpp
+    )
+
     add_executable(sphere
         tests/sphere.cpp
     )
 
-    foreach(tgt adaptive_tests adaptive_bench sphere)
+    foreach(tgt adaptive_tests adaptive_bench adaptive_kmap_bench sphere)
         target_link_libraries(${tgt} PRIVATE minkowski_cpp)
         target_include_directories(${tgt} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
