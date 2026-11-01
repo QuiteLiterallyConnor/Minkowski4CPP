@@ -14,9 +14,10 @@
 #include "utils/test_framework.hpp"
 
 using namespace minkowski::adaptive;
-using detail::DVec;
-using detail::Key;
-using detail::Topology;
+namespace adt = minkowski::adaptive::detail;
+using adt::DVec;
+using adt::Key;
+using adt::Topology;
 
 namespace {
 
@@ -61,13 +62,13 @@ std::shared_ptr<const Topology> random_topology(const TreeSpec& spec, std::mt199
         stack.pop_back();
         if (k.level < spec.depth && u01(rng) < spec.p_refine) {
             children.clear();
-            detail::child_keys(k, spec.D, children);
+            adt::child_keys(k, spec.D, children);
             stack.insert(stack.end(), children.begin(), children.end());
         } else if (u01(rng) >= spec.p_drop) {
             leaves.push_back(k);
         }
     }
-    std::sort(leaves.begin(), leaves.end(), detail::key_less);
+    std::sort(leaves.begin(), leaves.end(), adt::key_less);
     return Topology::make(cfg, std::move(leaves));
 }
 

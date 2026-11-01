@@ -2,8 +2,10 @@
 // Run: adaptive_kmap_bench [--n 20000] [--depth 4] [--channels 8] [--warmup 2] [--reps 5]
 //                          [--modes center,volume,overlap] [--shift 0] [--interp 20000]
 //                          [--conv none|cpu|cuda] [--cout 16] [--dtype f32|f64]
+//                          [--region 16] [--phases cold,warm]
 // Workload: half the points uniform in [0,256)^3, half in [0,16)^3; voxelized at level 0 and
-// the region [0,16)^3 refined to `depth` (the adaptive_bench workload).
+// the region [0,R)^3 refined to `depth`, R = --region (16 = the adaptive_bench workload).
+// --phases picks which kernel-map timings run (cold, warm or both).
 // Prints "key   value" lines; times are median / min / max over --reps after --warmup runs.
 //  kmap_<mode>_cold_ms : first map build on a freshly created topology (lazy indices included)
 //  kmap_<mode>_warm_ms : map build on a topology whose lazy indices already exist
@@ -33,7 +35,9 @@
 #include <c10/cuda/CUDAStream.h>
 #endif
 #ifdef _WIN32
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <psapi.h>
 #endif
@@ -55,6 +59,8 @@ struct Args {
     std::string conv = "none";
     int64_t cout = 16;
     std::string dtype = "f32";
+    double region = 16.0;
+    std::string phases = "cold,warm";
 };
 
 Args parse(int argc, char** argv) {
@@ -72,6 +78,8 @@ Args parse(int argc, char** argv) {
         else if (k == "--conv") a.conv = v;
         else if (k == "--cout") a.cout = std::atoll(v.c_str());
         else if (k == "--dtype") a.dtype = v;
+        else if (k == "--region") a.region = std::atof(v.c_str());
+        else if (k == "--phases") a.phases = v;
         else {
             std::cerr << "unknown argument " << k << "\n";
             std::exit(2);
@@ -233,7 +241,7 @@ int main(int argc, char** argv) {
     cfg.min_voxel_size = {m, m, m};
     cfg.max_depth = a.depth;
     auto t = AdaptiveSparseTensor::from_points(pts, feats, cfg);
-    t.refine(AxisAlignedRegion{{0, 0, 0}, {16, 16, 16}}, a.depth);
+    t.refine(AxisAlignedRegion{{0, 0, 0}, {a.region, a.region, a.region}}, a.depth);
     const auto coords = t.coordinates();
     const auto levels = t.levels();
     const auto f = t.features();
@@ -264,14 +272,18 @@ int main(int argc, char** argv) {
             print("kmap_" + mode + "_pairs", static_cast<double>(map.in_index.numel()));
         }
         AdaptiveSparseTensor fresh = t;
-        report("kmap_" + mode + "_cold", a,
-               [&] {
-                   KernelMapCache::instance().clear();
-                   fresh = AdaptiveSparseTensor::from_voxels(coords, levels, f, cfg);
-               },
-               [&] { build_adaptive_kernel_map(fresh, kc); });
-        report("kmap_" + mode + "_warm", a, [&] { KernelMapCache::instance().clear(); },
-               [&] { build_adaptive_kernel_map(t, kc); });
+        if (a.phases.find("cold") != std::string::npos) {
+            report("kmap_" + mode + "_cold", a,
+                   [&] {
+                       KernelMapCache::instance().clear();
+                       fresh = AdaptiveSparseTensor::from_voxels(coords, levels, f, cfg);
+                   },
+                   [&] { build_adaptive_kernel_map(fresh, kc); });
+        }
+        if (a.phases.find("warm") != std::string::npos) {
+            report("kmap_" + mode + "_warm", a, [&] { KernelMapCache::instance().clear(); },
+                   [&] { build_adaptive_kernel_map(t, kc); });
+        }
     }
     KernelMapCache::instance().clear();
 
