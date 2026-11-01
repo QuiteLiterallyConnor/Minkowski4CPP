@@ -411,6 +411,9 @@ endif()
 
 if(MINK_BUILD_TESTS)
 
+    enable_testing()
+    add_subdirectory(tests/utils)
+
     add_executable(train
         tests/train.cpp
     )
@@ -448,17 +451,23 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_gradients.cpp
         tests/adaptive/test_regression.cpp
         tests/adaptive/test_sphere.cpp
+        tests/adaptive/test_overlap_descent.cpp
+        tests/adaptive/test_parallel_kmap.cpp
     )
 
     add_executable(adaptive_bench
         tests/adaptive/bench_adaptive.cpp
     )
 
+    add_executable(adaptive_kmap_bench
+        tests/adaptive/bench_adaptive_kmap.cpp
+    )
+
     add_executable(sphere
         tests/sphere.cpp
     )
 
-    foreach(tgt adaptive_tests adaptive_bench sphere)
+    foreach(tgt adaptive_tests adaptive_bench adaptive_kmap_bench sphere)
         target_link_libraries(${tgt} PRIVATE minkowski_cpp)
         target_include_directories(${tgt} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -493,6 +502,7 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         tests/gaussian/test_gaussian_ply.cpp
         tests/gaussian/test_gaussian_render.cpp
         tests/gaussian/test_gaussian_gradcheck.cpp
+        tests/gaussian/test_gaussian_cuda_backward.cpp
     )
 
     target_compile_definitions(gaussian_tests PRIVATE
@@ -552,6 +562,24 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         )
         if(MINK_TORCH_CXX_FLAGS)
             target_compile_options(gaussian_ply_bench PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+
+        add_executable(gaussian_render_bench
+            benchmarks/gaussian_render_bench.cpp
+        )
+        target_link_libraries(gaussian_render_bench PRIVATE minkowski_cpp)
+        target_include_directories(gaussian_render_bench PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        )
+        target_compile_definitions(gaussian_render_bench PRIVATE
+            MINK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+            MINK_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(gaussian_render_bench PRIVATE
                 $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
             )
         endif()
