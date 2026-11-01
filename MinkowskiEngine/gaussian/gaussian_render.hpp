@@ -15,12 +15,16 @@ struct RenderOptions {
   at::Tensor background;
   // Highest SH degree to evaluate (-1 uses the model's degree).
   int sh_degree = -1;
-  // Pixels per tile side (CPU path; the CUDA kernels always use 16).
+  // Pixels per tile side (CPU paths; the CUDA kernels always use 16).
   int64_t tile_size = 16;
-  // Gaussians composited per chunk inside a tile.
+  // Gaussians composited per chunk inside a tile (LibTorch path only).
   int64_t chunk_size = 1024;
   // Use the fused CUDA rasterizer for CUDA inputs when available.
   bool use_cuda_kernels = true;
+  // Use the fused multi-threaded C++ rasterizer for CPU inputs (same
+  // algorithm as the CUDA kernels: per-pixel early stop at T < 1e-4).
+  // false selects the LibTorch reference path.
+  bool use_cpu_kernels = true;
 };
 
 struct RenderOutput {
