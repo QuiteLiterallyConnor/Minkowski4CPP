@@ -305,7 +305,7 @@ std::vector<Entry> deposits(const std::vector<HostGaussian> &hg, const Grid &gri
 // Pushes deposits on subdivided cells (cells containing a finer deposit) down to
 // leaves, splitting by the Gaussian's axis-aligned integral over each child.
 std::vector<Entry> resolve(std::vector<Entry> entries, const std::vector<HostGaussian> &hg,
-                           const Grid &grid) {
+                           const Grid &grid, int64_t max_entries) {
   KeySet targets;
   targets.reserve(entries.size());
   uint32_t min_level = std::numeric_limits<uint32_t>::max(), max_level = 0;
@@ -370,6 +370,13 @@ std::vector<Entry> resolve(std::vector<Entry> entries, const std::vector<HostGau
           stack.push_back(child);
         else
           out.push_back(child);
+        // Coarse Gaussians over many fine ones multiply entries (one per fine
+        // leaf they cover); fail early instead of exhausting memory.
+        if (static_cast<int64_t>(out.size() + stack.size()) > max_entries)
+          throw std::length_error(
+              "gaussians_to_adaptive: subdividing coarse cells around finer deposits needs more "
+              "than max_entries Gaussian-leaf entries; narrow the level range (min_level/"
+              "max_level), raise cell_per_sigma or raise max_entries");
       }
     }
   }
@@ -415,7 +422,7 @@ AdaptiveSparseTensor gaussians_to_adaptive(const GaussianTensor &gaussians,
   validate_options(options, grid, lmin, lmax);
 
   const auto hg = host_gaussians(gaussians, grid, options.cell_per_sigma, lmin, lmax);
-  auto entries = resolve(deposits(hg, grid, options), hg, grid);
+  auto entries = resolve(deposits(hg, grid, options), hg, grid, options.max_entries);
   prune_weights(entries, static_cast<int64_t>(hg.size()), options.min_weight);
 
   // Leaves in the adaptive export order (level, coordinates).

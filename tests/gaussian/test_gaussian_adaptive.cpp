@@ -297,6 +297,15 @@ TEST(gaussian_adaptive_small_inside_large_refines) {
                                                      map.gaussian_index == 0));
     CHECK(big_levels.ge(0).all().item<bool>() && big_levels.le(4).all().item<bool>());
     CHECK(big_levels.eq(4).any().item<bool>());
+    // 2 deposits, ~30 entries after subdivision: the guard also covers subdivision.
+    o.max_entries = 5;
+    bool length_error = false;
+    try {
+      gaussians_to_adaptive(g, cfg, o);
+    } catch (const std::length_error &) {
+      length_error = true;
+    }
+    CHECK(length_error);
   }
 }
 

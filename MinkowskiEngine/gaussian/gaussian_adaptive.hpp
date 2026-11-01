@@ -86,7 +86,10 @@ struct GaussianToAdaptiveOptions {
   bool mean_attributes = true;
   // Append the GaussianTensor's extra features after the colors.
   bool include_features = true;
-  // Guard against runaway BoxIntegral splats (total Gaussian-cell entries).
+  // Guard against runaway splats: total Gaussian-cell entries, both for the
+  // BoxIntegral deposits and after subdivision (a coarse Gaussian gets one
+  // entry per leaf it covers around finer deposits, so mixed-scale scenes can
+  // need far more entries than Gaussians).
   int64_t max_entries = 50'000'000;
   // Entries whose share of their Gaussian is below min_weight (far tails of
   // subdivided cells, ~1e-40 and smaller) are dropped and the Gaussian's
@@ -115,7 +118,8 @@ constexpr int64_t kAdaptiveFeatureChannel = 4;
 // zero/non-finite quaternions, a non-3-D config, positions too far from the
 // origin to be represented exactly at config.max_depth (|coordinate| >= 2^52
 // finest cells), or invalid options, and
-// std::length_error when BoxIntegral entries exceed max_entries.
+// std::length_error when the deposits or the subdivided entries exceed
+// max_entries.
 adaptive::AdaptiveSparseTensor
 gaussians_to_adaptive(const GaussianTensor &gaussians,
                       const adaptive::AdaptiveVoxelConfig &config,
