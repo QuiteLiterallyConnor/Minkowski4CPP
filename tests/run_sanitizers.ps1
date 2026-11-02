@@ -21,7 +21,8 @@ compute-sanitizer notes
   and cached blocks are reported as leaks at exit.
 - memcheck runs with --leak-check full. Errors are printed inline with the test output, so an error is attributed
   to the first "[ PASS ]/[ FAIL ]/[ SKIP ]" line that follows it.
-- Each job is killed after -TimeoutMin minutes (marked TIMEOUT in the summary).
+- Each job is killed after -TimeoutMin minutes (marked TIMEOUT in the summary). A job that printed the suite
+  summary but has not exited -ExitGraceSec seconds later is killed and marked EXIT-HANG (process teardown hang).
 - Windows (WDDM): compute-sanitizer needs the GPU debugger interface, enabled once by an administrator with
   <CUDA>\compute-sanitizer\EnableDebuggerInterface.bat (HKLM\SOFTWARE\NVIDIA Corporation\GPUDebugger
   EnableInterface=1). Without it the suite runs unchecked; such jobs are marked SANITIZER-UNAVAILABLE.
@@ -40,6 +41,7 @@ param(
     [Parameter(Mandatory)][string[]]$Jobs,
     [string]$Sanitizer = $(if ($env:CUDA_PATH) { Join-Path $env:CUDA_PATH 'compute-sanitizer\compute-sanitizer.exe' } else { 'compute-sanitizer' }),
     [double]$TimeoutMin = 10,
+    [int]$ExitGraceSec = 30,
     [switch]$KeepCachingAllocator,
     [string[]]$ExtraArgs = @()
 )
@@ -81,27 +83,36 @@ foreach ($job in $Jobs) {
     if ($filter) { $argList += $filter }
 
     "# $tag  $(Get-Date -Format s)  $file $($argList -join ' ')" | Set-Content $log
-    $psi = [Diagnostics.ProcessStartInfo]::new($file, (($argList | ForEach-Object { Quote $_ }) -join ' '))
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.WorkingDirectory = $BuildDir
+    # Output goes to files so the summary line can be seen while the process is still alive.
+    $outFile = "$log.stdout"; $errFile = "$log.stderr"
     $t0 = Get-Date
-    $p = [Diagnostics.Process]::Start($psi)
-    $outTask = $p.StandardOutput.ReadToEndAsync()
-    $errTask = $p.StandardError.ReadToEndAsync()
+    $p = Start-Process -FilePath $file -ArgumentList (($argList | ForEach-Object { Quote $_ }) -join ' ') `
+        -WorkingDirectory $BuildDir -RedirectStandardOutput $outFile -RedirectStandardError $errFile -NoNewWindow -PassThru
     $status = 'done'
-    if (-not $p.WaitForExit([int]($TimeoutMin * 60000))) {
-        $status = 'TIMEOUT'
-        # Kill through our own handle: taskkill can fail with "no running instance" for a process that is
-        # visible to CIM but not openable from a new process (seen on this host).
-        try { $p.Kill($true) } catch { & taskkill /T /F /PID $p.Id *> $null }
-        [void]$p.WaitForExit(60000)
+    $deadline = $t0.AddMinutes($TimeoutMin)
+    $summaryAt = $null
+    while (-not $p.WaitForExit(2000)) {
+        $now = Get-Date
+        if (-not $summaryAt -and (Select-String -Path $outFile -Pattern '\d+ passed, \d+ failed, \d+ skipped' -Quiet)) {
+            $summaryAt = $now
+        }
+        # The suite printed its summary but the process does not exit: a teardown hang (seen with MSVC ASan +
+        # LibTorch on Windows). Report it separately from a hang inside a test.
+        $hang = $summaryAt -and ($now - $summaryAt).TotalSeconds -gt $ExitGraceSec
+        if ($hang -or $now -gt $deadline) {
+            $status = $(if ($hang) { 'EXIT-HANG' } else { 'TIMEOUT' })
+            # Kill through our own handle: taskkill can fail with "no running instance" for a process that is
+            # visible to CIM but not openable from a new process (seen on this host).
+            try { $p.Kill($true) } catch { & taskkill /T /F /PID $p.Id *> $null }
+            [void]$p.WaitForExit(60000)
+            break
+        }
     }
     $sec = [int]((Get-Date) - $t0).TotalSeconds
-    $text = $outTask.Result + "`n--- stderr ---`n" + $errTask.Result
+    $text = (Get-Content -Raw $outFile) + "`n--- stderr ---`n" + (Get-Content -Raw $errFile)
     Add-Content $log $text
-    $rc = $p.ExitCode
+    Remove-Item $outFile, $errFile -ErrorAction SilentlyContinue
+    $rc = $(if ($status -eq 'done') { $p.ExitCode } else { -1 })
 
     $m = [regex]::Match($text, '(\d+) passed, (\d+) failed, (\d+) skipped')
     $tp, $tf, $ts = if ($m.Success) { $m.Groups[1].Value, $m.Groups[2].Value, $m.Groups[3].Value } else { '', '', '' }

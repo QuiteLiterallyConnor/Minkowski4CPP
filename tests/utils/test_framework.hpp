@@ -59,7 +59,7 @@ inline int run_all(int argc, char** argv) {
         }
     }
     std::cout << "\n" << passed << " passed, " << failed << " failed, " << skipped
-              << " skipped\n";
+              << " skipped" << std::endl;
     if (!filter.empty() && selected == 0) {
         std::cerr << "[ ERROR ] No tests matched filter: " << filter << "\n";
         return 1;
