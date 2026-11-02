@@ -111,7 +111,9 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
   // order (slot, then output, then input leaf index) exactly, independent of thread count.
   const int64_t n_out = out.size();
   const bool overlap = kc.mode == AdaptiveConvMode::OverlapWeighted;
-  const int blocks = detail::parallel_block_count(n_out, n_out * nk * (overlap ? 4 : 1));
+  const bool averaged = kc.mode == AdaptiveConvMode::CenterAveraged;
+  const int blocks =
+      detail::parallel_block_count(n_out, n_out * nk * (overlap || averaged ? 4 : 1));
   struct Lists {
     std::vector<std::vector<int64_t>> in_k, out_k;
     std::vector<std::vector<double>> w_k;
@@ -126,6 +128,7 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
     in_k.resize(static_cast<size_t>(nk));
     out_k.resize(static_cast<size_t>(nk));
     w_k.resize(static_cast<size_t>(nk));
+    std::vector<std::pair<int64_t, double>> avg; // CenterAveraged scratch
     for (int64_t o = o_begin; o < o_end; ++o) {
       const Key &ok = out.keys[o];
       DVec lo, hi;
@@ -154,6 +157,26 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
           });
         } else {
           const int64_t j = in.find_containing(t);
+          if (averaged && (j < 0 || in.keys[j].level > ok.level)) {
+            // The tap cell is split into finer leaves (or empty at this level): average them.
+            DVec blo{}, bhi{};
+            for (int d = 0; d < D; ++d) {
+              blo[d] = t[d] - 0.5 * s[d];
+              bhi[d] = t[d] + 0.5 * s[d];
+            }
+            avg.clear();
+            double total = 0.0;
+            in.for_each_overlap(blo, bhi, [&](int64_t i, double ov) {
+              avg.emplace_back(i, ov);
+              total += ov;
+            });
+            for (const auto &h : avg) {
+              in_k[k].push_back(h.first);
+              out_k[k].push_back(o);
+              w_k[k].push_back(h.second / total);
+            }
+            continue;
+          }
           if (j < 0)
             continue;
           in_k[k].push_back(j);

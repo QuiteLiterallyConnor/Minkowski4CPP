@@ -131,6 +131,7 @@ bool parse_mode(const std::string& mode, AdaptiveKernelConfig& kc) {
     if (mode == "center") kc.mode = AdaptiveConvMode::CenterSampled;
     else if (mode == "volume") kc.mode = AdaptiveConvMode::VolumeWeighted;
     else if (mode == "overlap") kc.mode = AdaptiveConvMode::OverlapWeighted;
+    else if (mode == "averaged") kc.mode = AdaptiveConvMode::CenterAveraged;
     else return false;
     return true;
 }

@@ -116,6 +116,13 @@ with the first axis varying slowest.
 | `CenterSampled` | Sample the neighbor at the kernel query center |
 | `VolumeWeighted` | Volume-aware contribution |
 | `OverlapWeighted` | Weight by overlap volume / output volume |
+| `CenterAveraged` | Opt-in. `CenterSampled`, except where the tap cell is split into finer leaves: then the overlap-volume-weighted average of those leaves |
+
+With `CenterSampled`, a tap of a coarse output leaf lands on a corner shared by
+the finer leaves below it and reads only the one leaf whose lower corner is the
+tap point; with `output_level_shift = -1` on a fully refined region only one of
+the 2^D children under each output reaches it (the others get zero gradient).
+`CenterAveraged` reads all of them and equals `CenterSampled` on uniform grids.
 
 Coarsen output resolution with `output_level_shift = -1`:
 

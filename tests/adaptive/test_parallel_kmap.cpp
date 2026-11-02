@@ -215,6 +215,83 @@ TEST(parallel_kmap_matches_serial_oracle) {
     KernelMapCache::instance().clear();
 }
 
+TEST(center_averaged_parallel_blocks_match_analytic_sparse_fixture) {
+    // Isolated roots make the complete map analytic: only the center tap can hit.
+    // Alternate coarse leaves and three-of-four refined children. The omitted child
+    // alternates between containing the center and not containing it, exercising both
+    // CenterAveraged fallbacks without copying its overlap/search implementation.
+    constexpr int64_t roots = 2048, spacing = 6, slots = 25, center = 12;
+    AdaptiveVoxelConfig cfg;
+    cfg.base_voxel_size = {2.0, 3.0};
+    cfg.origin = {-5.0, 7.0};
+    cfg.max_depth = 1;
+    std::vector<Key> leaves, expected_outputs;
+    for (int64_t i = 0; i < roots; ++i) {
+        Key root{};
+        root.coordinates[0] = spacing * i;
+        expected_outputs.push_back(root);
+        if (i % 2 == 0) {
+            leaves.push_back(root);
+        } else {
+            const int missing = i % 4 == 1 ? 1 : 0;
+            for (int dx = 0; dx < 2; ++dx)
+                for (int dy = 0; dy < 2; ++dy) {
+                    if (dx == missing && dy == missing) continue;
+                    Key child{};
+                    child.level = 1;
+                    child.coordinates[0] = 2 * root.coordinates[0] + dx;
+                    child.coordinates[1] = dy;
+                    leaves.push_back(child);
+                }
+        }
+    }
+    std::sort(leaves.begin(), leaves.end(), adt::key_less);
+    auto topo = Topology::make(cfg, std::move(leaves));
+    auto x = AdaptiveSparseTensor::from_topology(
+        topo, torch::zeros({topo->size(), 1}, torch::kFloat64));
+    CHECK(roots * slots >= 32768);
+    if (adt::parallel_block_count(roots, roots * slots) < 2)
+        throw mink_test::Skip("Parallel CenterAveraged requires at least two hardware threads");
+
+    // Group input indices by the known fixture root, in their original leaf order.
+    std::vector<std::vector<int64_t>> input_by_root(roots);
+    for (int64_t i = 0; i < topo->size(); ++i) {
+        const auto& key = topo->keys[i];
+        input_by_root[key.coordinates[0] / (int64_t(1) << key.level) / spacing].push_back(i);
+    }
+    Pairs expected;
+    expected.offsets.assign(slots + 1, 0);
+    for (int64_t o = 0; o < roots; ++o) {
+        CHECK_EQ(input_by_root[o].size(), size_t(o % 2 == 0 ? 1 : 3));
+        for (int64_t i : input_by_root[o]) {
+            expected.in.push_back(i);
+            expected.out.push_back(o);
+            expected.k.push_back(center);
+            expected.w.push_back(o % 2 == 0 ? 1.0 : 1.0 / 3.0);
+        }
+    }
+    for (int64_t k = center + 1; k <= slots; ++k)
+        expected.offsets[k] = static_cast<int64_t>(expected.in.size());
+    AdaptiveKernelConfig kc;
+    kc.mode = AdaptiveConvMode::CenterAveraged;
+    kc.output_level_shift = -1;
+    kc.kernel_size = 5;
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        KernelMapCache::instance().clear();
+        const auto entry = KernelMapCache::instance().get_or_build(x, kc);
+        CHECK(entry.out_topology->keys == expected_outputs);
+        CHECK_EQ(entry.map.num_kernels, slots);
+        CHECK(entry.map.kernel_offsets == expected.offsets);
+        CHECK(to_vec(entry.map.in_index) == expected.in);
+        CHECK(to_vec(entry.map.out_index) == expected.out);
+        CHECK(to_vec(entry.map.kernel_index) == expected.k);
+        const auto weights = entry.map.weight.contiguous();
+        CHECK(std::vector<double>(weights.data_ptr<double>(),
+                                  weights.data_ptr<double>() + weights.numel()) == expected.w);
+    }
+    KernelMapCache::instance().clear();
+}
+
 TEST(find_containing_matches_level_probe_oracle) {
     std::mt19937_64 rng(99);
     std::uniform_real_distribution<double> u01(0.0, 1.0);
