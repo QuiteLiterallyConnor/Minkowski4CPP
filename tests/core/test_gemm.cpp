@@ -22,7 +22,7 @@ template <typename T>
 std::vector<T> store(const at::Tensor& S, bool row_major, int ld, T fill) {
     const int64_t rows = S.size(0), cols = S.size(1);
     std::vector<T> buf((row_major ? rows : cols) * ld, fill);
-    auto s = S.to(dtype_of<T>()).contiguous();
+    at::Tensor s = S.to(dtype_of<T>()).contiguous();  // not `auto`: that is type-dependent here
     const T* p = s.data_ptr<T>();
     for (int64_t i = 0; i < rows; ++i)
         for (int64_t j = 0; j < cols; ++j)
@@ -82,7 +82,7 @@ void check_gemm(CBLAS_ORDER layout, CBLAS_TRANSPOSE ta, CBLAS_TRANSPOSE tb, int 
 
     auto expected = double(alpha) * opA.mm(opB);
     if (beta != T(0)) expected += double(beta) * C0;
-    auto got = load<T>(c, M, N, rm, ldc);
+    at::Tensor got = load<T>(c, M, N, rm, ldc);  // not `auto`: keeps .item<double>() parseable
     const double tol = std::is_same_v<T, float> ? 1e-4 : 1e-12;
     if (!torch::allclose(got, expected, tol, tol))
         FAIL_AT("gemm mismatch: " << (rm ? "RowMajor" : "ColMajor") << " " << (tA ? "T" : "N")
