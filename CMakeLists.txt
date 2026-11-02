@@ -485,6 +485,18 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_coverage.cpp
     )
 
+    # Splitting uses only sorted integer keys; keep its differential tests and
+    # phase benchmark independent of LibTorch runtime initialization.
+    add_executable(adaptive_split_tests tests/adaptive/test_part_split.cpp)
+    add_executable(adaptive_split_bench tests/adaptive/bench_part_split.cpp)
+    foreach(tgt adaptive_split_tests adaptive_split_bench)
+        target_include_directories(${tgt} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    endforeach()
+    if(WIN32)
+        target_link_libraries(adaptive_split_bench PRIVATE Psapi)
+    endif()
+
     add_executable(adaptive_bench
         tests/adaptive/bench_adaptive.cpp
     )
@@ -526,6 +538,7 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
 
     enable_testing()
     add_test(NAME adaptive_tests COMMAND adaptive_tests)
+    add_test(NAME adaptive_split_tests COMMAND adaptive_split_tests)
     # Smoke run only (tiny sizes, one repetition): keeps the benchmark building and running.
     add_test(NAME adaptive_vs_uniform_bench_smoke
         COMMAND adaptive_vs_uniform_bench --datasets clustered,shell

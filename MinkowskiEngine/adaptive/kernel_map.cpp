@@ -1,5 +1,6 @@
 #include "kernel_map.hpp"
 #include "adaptive_topology.hpp"
+#include "part_split.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -355,25 +356,14 @@ struct Split {
   std::vector<std::vector<int64_t>> leaves; // leaf indices of each part, ascending
 
   void assign(const Topology &t) {
-    leaves.assign(first_x.size(), {});
-    for (int64_t i = 0; i < t.size(); ++i) {
-      const auto it = std::upper_bound(first_x.begin(), first_x.end(), level0_x(t.keys[i]));
-      leaves[static_cast<size_t>(it - first_x.begin()) - 1].push_back(i);
-    }
+    leaves = detail::part_leaves(first_x, t.keys);
   }
 };
 
 // first_x is empty only for an empty topology; a topology that does not split is one part.
 Split split_parts(const Topology &t, int r) {
   Split s;
-  std::vector<int64_t> xs(static_cast<size_t>(t.size()));
-  for (int64_t i = 0; i < t.size(); ++i)
-    xs[i] = level0_x(t.keys[i]);
-  std::sort(xs.begin(), xs.end());
-  xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
-  for (size_t j = 0; j < xs.size(); ++j)
-    if (j == 0 || xs[j] - xs[j - 1] > r)
-      s.first_x.push_back(xs[j]);
+  s.first_x = detail::part_starts(t.keys, r);
   return s;
 }
 
