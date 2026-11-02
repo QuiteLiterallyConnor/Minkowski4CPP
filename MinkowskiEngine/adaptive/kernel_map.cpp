@@ -206,23 +206,46 @@ using CacheKey = std::tuple<uint64_t, int, int, int>;
 
 } // namespace
 
+KernelMapDeviceCache::Slot &KernelMapDeviceCache::slot_for(const AdaptiveKernelMap &map,
+                                                            const at::Device &device) {
+  for (auto &s : slots_)
+    if (s.device == device)
+      return s;
+  Slot s;
+  s.device = device;
+  // One upload per index array; `to` is a no-op for host maps used on the CPU.
+  s.in_index = map.in_index.to(device);
+  s.out_index = map.out_index.to(device);
+  slots_.push_back(std::move(s));
+  return slots_.back();
+}
+
+at::Tensor KernelMapDeviceCache::tiles(const AdaptiveKernelMap &map, const at::Device &device,
+                                       int64_t rows) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Slot &slot = slot_for(map, device);
+  for (const auto &t : slot.tiles)
+    if (t.first == rows)
+      return t.second;
+  std::vector<int64_t> table;
+  const auto &off = map.kernel_offsets;
+  for (size_t k = 0; k + 1 < off.size(); ++k)
+    for (int64_t b = off[k]; b < off[k + 1]; b += rows) {
+      table.push_back(b);
+      table.push_back(std::min(b + rows, off[k + 1]));
+      table.push_back(static_cast<int64_t>(k));
+    }
+  const int64_t n = static_cast<int64_t>(table.size()) / 3;
+  auto t = torch::from_blob(table.data(), {n, 3}, torch::kInt64).clone().to(device);
+  slot.tiles.emplace_back(rows, t);
+  return t;
+}
+
 KernelMapDeviceCache::Arrays KernelMapDeviceCache::get(const AdaptiveKernelMap &map,
                                                        const at::Device &device,
                                                        at::ScalarType dtype, bool with_weight) {
   std::lock_guard<std::mutex> lock(mutex_);
-  Slot *slot = nullptr;
-  for (auto &s : slots_)
-    if (s.device == device)
-      slot = &s;
-  if (!slot) {
-    Slot s;
-    s.device = device;
-    // One upload per index array; `to` is a no-op for host maps used on the CPU.
-    s.in_index = map.in_index.to(device);
-    s.out_index = map.out_index.to(device);
-    slots_.push_back(std::move(s));
-    slot = &slots_.back();
-  }
+  Slot *slot = &slot_for(map, device);
   Arrays a{slot->in_index, slot->out_index, at::Tensor()};
   if (with_weight) {
     for (const auto &w : slot->weights)
@@ -241,6 +264,10 @@ namespace detail {
 int64_t &cuda_apply_map_group_bytes() {
   static int64_t bytes = int64_t(32) << 20;
   return bytes;
+}
+bool &cuda_apply_map_fused() {
+  static bool on = true;
+  return on;
 }
 } // namespace detail
 

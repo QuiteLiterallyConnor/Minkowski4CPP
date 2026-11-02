@@ -1,5 +1,8 @@
 #include "ops.hpp"
 #include "adaptive_topology.hpp"
+#ifdef USE_CUDA
+#include "fused_apply.hpp"
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -21,6 +24,71 @@ void check_weight(const at::Tensor &weight, const AdaptiveKernelMap &m, int64_t 
     throw std::invalid_argument("weight must have shape [kernel_size^D, in_channels, out_channels]");
 }
 
+#ifdef USE_CUDA
+// Pairs per atomic partial of the fused weight gradient (one block per chunk and channel tile).
+constexpr int64_t kFusedChunkRows = 256;
+
+// Autograd wrapper of the fused CUDA kernels (fused_apply_cuda.cu): forward, input gradient
+// and weight gradient are one launch each. Only x, the weight and the non-differentiable
+// index arrays are saved, so backward keeps no [pairs, C] gather alive.
+struct FusedApplyMap : public torch::autograd::Function<FusedApplyMap> {
+  static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &x,
+                            const at::Tensor &w, const at::Tensor &from, const at::Tensor &to,
+                            const at::Tensor &pw, const at::Tensor &tiles,
+                            const at::Tensor &chunks, int64_t n_out,
+                            const std::vector<int64_t> &offsets) {
+    auto y = torch::zeros({n_out, w.size(2)}, x.options());
+    detail::cuda_fused_gather_gemm_scatter(x, w, from, to, pw, tiles, /*trans_w=*/false, y);
+    ctx->save_for_backward({x, w, from, to, pw, tiles, chunks});
+    ctx->saved_data["offsets"] = offsets;
+    return y;
+  }
+
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext *ctx,
+                                                 torch::autograd::variable_list grads) {
+    const auto s = ctx->get_saved_variables();
+    const at::Tensor &x = s[0], &w = s[1], &from = s[2], &to = s[3], &pw = s[4], &tiles = s[5],
+                     &chunks = s[6];
+    if (!grads[0].defined())
+      return {torch::zeros_like(x), torch::zeros_like(w), {}, {}, {}, {}, {}, {}, {}};
+    const at::Tensor gy = grads[0].contiguous();
+    at::Tensor gx, gw;
+    if (torch::GradMode::is_enabled()) {
+      // create_graph=true: differentiable formulation (same math) so higher-order gradients
+      // work as on the per-slot path.
+      if (ctx->needs_input_grad(0))
+        gx = FusedApplyMap::apply(gy, w.transpose(1, 2).contiguous(), to, from, pw, tiles, chunks,
+                                  x.size(0), ctx->saved_data["offsets"].toIntVector());
+      if (ctx->needs_input_grad(1)) {
+        const auto off = ctx->saved_data["offsets"].toIntVector();
+        std::vector<int64_t> sizes(off.size() - 1);
+        for (size_t k = 0; k + 1 < off.size(); ++k)
+          sizes[k] = off[k + 1] - off[k];
+        auto xs = x.index_select(0, from);
+        if (pw.numel() > 0)
+          xs = xs * pw.unsqueeze(1);
+        auto xb = xs.split_with_sizes(sizes, 0);
+        auto gb = gy.index_select(0, to).split_with_sizes(sizes, 0);
+        std::vector<at::Tensor> parts;
+        for (size_t k = 0; k < sizes.size(); ++k)
+          parts.push_back(xb[k].t().matmul(gb[k]));
+        gw = torch::stack(parts, 0);
+      }
+      return {gx, gw, {}, {}, {}, {}, {}, {}, {}};
+    }
+    if (ctx->needs_input_grad(0)) {
+      gx = torch::zeros_like(x);
+      detail::cuda_fused_gather_gemm_scatter(gy, w, to, from, pw, tiles, /*trans_w=*/true, gx);
+    }
+    if (ctx->needs_input_grad(1)) {
+      gw = torch::zeros_like(w);
+      detail::cuda_fused_weight_grad(x, gy, from, to, pw, chunks, gw);
+    }
+    return {gx, gw, {}, {}, {}, {}, {}, {}, {}};
+  }
+};
+#endif
+
 // Gather -> (optional per-pair weight) -> GEMM per kernel slot -> scatter-add.
 // `transpose` swaps the direction so the transposed convolution reuses the map.
 // The map's index/weight arrays come from the entry's device cache (uploaded once per
@@ -36,6 +104,20 @@ at::Tensor apply_map(const at::Tensor &x, const at::Tensor &weight, const Kernel
   auto arrays = entry.device->get(m, x.device(), x.scalar_type(), weighted);
   const at::Tensor &from_d = transpose ? arrays.out_index : arrays.in_index;
   const at::Tensor &to_d = transpose ? arrays.in_index : arrays.out_index;
+#ifdef USE_CUDA
+  // Fused path: one launch per direction for all kernel slots (see FusedApplyMap). Not used
+  // in deterministic mode (its atomics make float sums order-dependent).
+  if (x.is_cuda() && detail::cuda_apply_map_fused() &&
+      !at::globalContext().deterministicAlgorithms() &&
+      (x.scalar_type() == at::kFloat || x.scalar_type() == at::kDouble)) {
+    const int bs = detail::fused_tile(x.size(1), cout);
+    auto tiles = entry.device->tiles(m, x.device(), bs);
+    auto chunks = entry.device->tiles(m, x.device(), kFusedChunkRows);
+    auto pw = weighted ? arrays.weight : at::empty({0}, x.options());
+    return FusedApplyMap::apply(x.contiguous(), weight.to(x.scalar_type()).contiguous(), from_d,
+                                to_d, pw, tiles, chunks, n_out, m.kernel_offsets);
+  }
+#endif
   auto y = torch::zeros({n_out, cout}, x.options());
   if (!x.is_cuda()) {
     // Host path: the per-slot formulation. Its temporaries stay small (one slot at a time),

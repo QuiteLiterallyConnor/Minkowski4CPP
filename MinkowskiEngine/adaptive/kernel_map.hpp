@@ -53,13 +53,19 @@ public:
   // in/out indices on `device`, and the weights as `dtype` if `with_weight`.
   Arrays get(const AdaptiveKernelMap &map, const at::Device &device, at::ScalarType dtype,
              bool with_weight);
+  // [T, 3] int64 (begin, end, slot) table cutting every slot's pair range into blocks of at
+  // most `rows` pairs, on `device`; built once per device and row count (used by the fused
+  // CUDA apply_map).
+  at::Tensor tiles(const AdaptiveKernelMap &map, const at::Device &device, int64_t rows);
 
 private:
   struct Slot {
     at::Device device{at::kCPU};
     at::Tensor in_index, out_index;
     std::vector<std::pair<at::ScalarType, at::Tensor>> weights;
+    std::vector<std::pair<int64_t, at::Tensor>> tiles;
   };
+  Slot &slot_for(const AdaptiveKernelMap &map, const at::Device &device); // mutex_ held
   std::mutex mutex_;
   std::vector<Slot> slots_;
 };
@@ -76,6 +82,11 @@ namespace detail {
 // a slot larger than the budget is its own group. Default 32 MiB; 0 = one group for all
 // slots. Process-wide tuning/test hook; set it before convolutions run, not concurrently.
 int64_t &cuda_apply_map_group_bytes();
+// Whether float/double CUDA apply_map calls use the fused single-launch kernels
+// (fused_apply_cuda.cu) instead of the per-slot GEMMs above. Default on. Deterministic mode
+// (at::globalContext().deterministicAlgorithms()) always takes the per-slot path, whose
+// results do not depend on atomic ordering. Process-wide tuning/test hook like the above.
+bool &cuda_apply_map_fused();
 } // namespace detail
 
 // Kernel slot of an offset in {-r..r}^D, r = (kernel_size-1)/2, first dimension slowest.

@@ -3,6 +3,7 @@
 //                          [--modes center,volume,overlap] [--shift 0] [--interp 20000]
 //                          [--conv none|cpu|cuda] [--cout 16] [--dtype f32|f64]
 //                          [--region 16] [--phases cold,warm] [--drop-empty 0|1] [--group-mb M]
+//                          [--fused 0|1]
 // Workload: half the points uniform in [0,256)^3, half in [0,16)^3; voxelized at level 0 and
 // the region [0,R)^3 refined to `depth`, R = --region (16 = the adaptive_bench workload).
 // --phases picks which kernel-map timings run (cold, warm or both).
@@ -67,6 +68,7 @@ struct Args {
     double region = 16.0;
     std::string phases = "cold,warm";
     double group_mb = -1.0;  // < 0: library default (CUDA apply_map group budget, 0 = one group)
+    int fused = -1;          // < 0: library default (fused CUDA apply_map kernels on/off)
 };
 
 Args parse(int argc, char** argv) {
@@ -88,6 +90,7 @@ Args parse(int argc, char** argv) {
         else if (k == "--phases") a.phases = v;
         else if (k == "--drop-empty") a.drop_empty = std::atoi(v.c_str()) != 0;
         else if (k == "--group-mb") a.group_mb = std::atof(v.c_str());
+        else if (k == "--fused") a.fused = std::atoi(v.c_str());
         else {
             std::cerr << "unknown argument " << k << "\n";
             std::exit(2);
@@ -242,6 +245,7 @@ int main(int argc, char** argv) {
     if (a.group_mb >= 0)
         minkowski::adaptive::detail::cuda_apply_map_group_bytes() =
             static_cast<int64_t>(a.group_mb * 1048576.0);
+    if (a.fused >= 0) minkowski::adaptive::detail::cuda_apply_map_fused() = a.fused != 0;
     torch::manual_seed(0);
     auto pts = torch::cat({torch::rand({a.n / 2, 3}, torch::kFloat64) * 256.0,
                            torch::rand({a.n - a.n / 2, 3}, torch::kFloat64) * 16.0});

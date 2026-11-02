@@ -118,11 +118,15 @@ TEST(device_kmap_cuda_slot_groups_match_reference) {
     if (!torch::cuda::is_available()) return;
     // 0: one group for all slots; 1 byte: every slot its own group; 4 KiB: several slots per
     // group with group boundaries inside the map (the test maps have ~10^3-10^4 pairs).
+    // The groups exist only on the unfused path (test_fused_apply.cpp covers the fused one).
+    const bool fused = minkowski::adaptive::detail::cuda_apply_map_fused();
+    minkowski::adaptive::detail::cuda_apply_map_fused() = false;
     for (int64_t bytes : {int64_t(0), int64_t(1), int64_t(4096)}) {
         GroupBytes guard(bytes);
         check_against_reference(torch::kCUDA, torch::kFloat64, 1e-12);
         check_against_reference(torch::kCUDA, torch::kFloat32, 1e-4);
     }
+    minkowski::adaptive::detail::cuda_apply_map_fused() = fused;
 }
 
 TEST(device_kmap_cache_uploads_once_per_device_and_dtype) {
