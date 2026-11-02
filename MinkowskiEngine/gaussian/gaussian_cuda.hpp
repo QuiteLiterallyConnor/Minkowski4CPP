@@ -28,6 +28,29 @@ void rasterize_backward_cuda(const at::Tensor &attrs, const at::Tensor &ids,
                              const at::Tensor &last_index, int64_t height,
                              int64_t width, at::Tensor &grad_attrs);
 
+// Fused projection of render_gaussians (gaussian_project_cuda.cu). Per Gaussian, out [N, 10]:
+// x2, y2 (pixel mean), conic a, b, c, camera-space z (differentiable), then a, b, c (2D covariance
+// with the low-pass term) and its determinant (for culling). world_to_camera is the [3, 4]
+// rotation | translation block, float32, contiguous, on the device.
+constexpr int kProjectColumns = 10;
+struct ProjectParams {
+  float fx, fy, cx, cy, near_plane;
+  float tx_lo, tx_hi, ty_lo, ty_hi; // clamped-frustum limits of x/z and y/z for the Jacobian
+};
+void project_forward_cuda(const at::Tensor &positions, const at::Tensor &rotations,
+                          const at::Tensor &scales, const at::Tensor &world_to_camera,
+                          const ProjectParams &params, at::Tensor &out);
+// Gradients of positions [N,3], rotations [N,4] and scales [N,3] from grad_out [N,10] (only the
+// first 6 columns carry gradient); outputs are overwritten.
+void project_backward_cuda(const at::Tensor &positions, const at::Tensor &rotations,
+                           const at::Tensor &scales, const at::Tensor &world_to_camera,
+                           const ProjectParams &params, const at::Tensor &grad_out,
+                           at::Tensor &grad_positions, at::Tensor &grad_rotations,
+                           at::Tensor &grad_scales);
+// Whether render_gaussians uses the fused projection for CUDA inputs (default on; the LibTorch
+// path is used when the camera pose requires grad). Process-wide tuning/test hook.
+bool &cuda_fused_projection();
+
 void covariance_cuda(const at::Tensor &rotations, const at::Tensor &scales,
                      at::Tensor &output);
 
