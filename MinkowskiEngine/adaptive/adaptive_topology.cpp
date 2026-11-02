@@ -98,14 +98,7 @@ void parallel_sort(std::vector<KeyIdx> &v) {
   }
 }
 
-inline uint64_t fast_hash(const Key &k) {
-  uint64_t h = k.level;
-  for (int d = 0; d < kMaxDim; ++d)
-    h = (h ^ static_cast<uint64_t>(k.coordinates[d])) * 0x9e3779b97f4a7c15ULL;
-  h ^= h >> 32;
-  h *= 0xd6e8feb86659fd93ULL;
-  return h ^ (h >> 32);
-}
+inline uint64_t fast_hash(const Key &k) { return Topology::NodeTable::hash(k); }
 
 // Open-addressing set of the keys in one level's range of the sorted key array.
 struct LevelSet {
@@ -191,6 +184,15 @@ bool has_active_ancestor(const std::vector<Key> &keys, const std::vector<uint32_
 
 void parallel_blocks(int64_t n, const std::function<void(int64_t, int64_t)> &f) {
   for_blocks(n, f);
+}
+
+int parallel_block_count(int64_t n, int64_t work) {
+  return static_cast<int>(std::max<int64_t>(1, std::min<int64_t>(thread_count(work), n)));
+}
+
+void run_parallel_blocks(int64_t n, int blocks,
+                         const std::function<void(int, int64_t, int64_t)> &f) {
+  run_tasks(blocks, [&](int b) { f(b, n * b / blocks, n * (b + 1) / blocks); });
 }
 
 void sort_keys(std::vector<Key> &keys, std::vector<int64_t> &order) {
@@ -313,6 +315,66 @@ const std::unordered_map<Key, int64_t, KeyHash> &Topology::index_map() const {
       index_.emplace(keys[i], static_cast<int64_t>(i));
   });
   return index_;
+}
+
+const Topology::NodeTable &Topology::node_table() const {
+  std::call_once(nodes_once_, [this] {
+    NodeTable &t = nodes_;
+    const int64_t N = size();
+    if (N == 0) {
+      t.slots.assign(1, NodeTable::Slot{Key{}, NodeTable::kEmpty});
+      t.mask = 0;
+      return;
+    }
+    const uint32_t lmin = present_levels.front();
+    // Ancestors of sorted keys come in runs, so consecutive leaves mostly stop after one probe.
+    // Load factor stays <= 0.7 (full 2^D trees add ~N/(2^D-1) internal nodes to N leaves).
+    size_t cap = 16;
+    while (cap < static_cast<size_t>(N) * 2)
+      cap <<= 1;
+    t.slots.assign(cap, NodeTable::Slot{Key{}, NodeTable::kEmpty});
+    t.mask = cap - 1;
+    int64_t used = 0;
+    // Inserts k with value v unless present; returns false if it was already there.
+    auto insert = [&](const Key &k, int64_t v) {
+      for (uint64_t h = NodeTable::hash(k) & t.mask;; h = (h + 1) & t.mask) {
+        NodeTable::Slot &s = t.slots[h];
+        if (s.value == NodeTable::kEmpty) {
+          s.key = k;
+          s.value = v;
+          ++used;
+          return true;
+        }
+        if (s.key == k)
+          return false;
+      }
+    };
+    auto grow = [&] {
+      std::vector<NodeTable::Slot> old;
+      old.swap(t.slots);
+      const size_t ncap = old.size() * 2;
+      t.slots.assign(ncap, NodeTable::Slot{Key{}, NodeTable::kEmpty});
+      t.mask = ncap - 1;
+      used = 0;
+      for (const auto &s : old)
+        if (s.value != NodeTable::kEmpty)
+          insert(s.key, s.value);
+    };
+    for (int64_t i = 0; i < N; ++i) {
+      // Room for the leaf and all its ancestors at load <= 0.7.
+      if (static_cast<size_t>(used + keys[i].level - lmin + 1) * 10 > t.slots.size() * 7)
+        grow();
+      insert(keys[i], i);
+      Key a = keys[i];
+      while (a.level > lmin) {
+        a = parent_key(a);
+        if (!insert(a, NodeTable::kInternal))
+          break; // its ancestors are already in the table
+        ++t.internal_count;
+      }
+    }
+  });
+  return nodes_;
 }
 
 void Topology::build_geometry() const {
