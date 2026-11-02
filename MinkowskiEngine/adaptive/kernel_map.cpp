@@ -86,6 +86,32 @@ std::shared_ptr<const Topology> derive_output_topology(const std::shared_ptr<con
   return Topology::make(in->config, std::move(kept));
 }
 
+// The leaf containing the centre of grid cell `cell`, or -1: find_containing(centre) in integer
+// arithmetic. At a level l <= cell.level the centre lies in the cell's ancestor; at a finer
+// level l = cell.level + m in the cell's child whose lower corner is the centre (cells are
+// half-open), coordinates c * 2^m + 2^(m-1). No rounding is involved, so the result depends
+// only on the keys, never on where the grid sits in space.
+int64_t find_containing_center(const Topology &t, const Topology::NodeTable &nodes,
+                               const Key &cell) {
+  Key k{};
+  for (uint32_t l : t.present_levels) {
+    k.level = l;
+    if (l <= cell.level) {
+      const uint32_t m = cell.level - l;
+      for (int d = 0; d < t.D; ++d)
+        k.coordinates[d] = cell.coordinates[d] >> m; // floor, also for negatives
+    } else {
+      const uint32_t m = l - cell.level;
+      for (int d = 0; d < t.D; ++d) // |c| < 2^53 and m <= max_depth: no overflow
+        k.coordinates[d] = cell.coordinates[d] * (int64_t(1) << m) + (int64_t(1) << (m - 1));
+    }
+    const int64_t v = nodes.lookup(k);
+    if (v != Topology::NodeTable::kInternal)
+      return v; // leaf index, or kEmpty (-1)
+  }
+  return -1;
+}
+
 AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
                               const AdaptiveKernelConfig &kc) {
   const int K = kc.kernel_size;
@@ -117,8 +143,8 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
     std::vector<std::vector<double>> w_k;
   };
   std::vector<Lists> lists(static_cast<size_t>(blocks));
-  if (n_out > 0)
-    in.node_table(); // build the shared lookup table once, before the workers start
+  // Build the shared lookup table once, before the workers start.
+  const Topology::NodeTable *in_nodes = n_out > 0 ? &in.node_table() : nullptr;
   const double *in_volumes = in.volumes.data_ptr<double>();
   detail::run_parallel_blocks(n_out, blocks, [&](int b, int64_t o_begin, int64_t o_end) {
     auto &in_k = lists[b].in_k, &out_k = lists[b].out_k;
@@ -153,7 +179,12 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
             w_k[k].push_back(ov / Vo);
           });
         } else {
-          const int64_t j = in.find_containing(t);
+          // The tap point t is the centre of the output-level cell ok + offset; resolve it on
+          // the integer grid (same leaf as in.find_containing(t), without rounding).
+          Key cell = ok;
+          for (int d = 0; d < D; ++d)
+            cell.coordinates[d] += offsets[k][d];
+          const int64_t j = find_containing_center(in, *in_nodes, cell);
           if (j < 0)
             continue;
           in_k[k].push_back(j);

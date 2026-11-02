@@ -117,6 +117,13 @@ with the first axis varying slowest.
 | `VolumeWeighted` | Volume-aware contribution |
 | `OverlapWeighted` | Weight by overlap volume / output volume |
 
+`CenterSampled` and `VolumeWeighted` resolve each tap on the integer grid: the tap is the
+centre of the neighbouring output-level cell, and where that cell is split into finer leaves
+it reads the leaf whose lower corner the centre is (cells are half-open). The map therefore
+depends only on the leaf keys, not on where the grid sits in space, also for voxel sizes and
+origins that are not binary fractions (earlier versions located the tap as a floating-point
+point there, and rounding decided between the leaves touching it).
+
 Coarsen output resolution with `output_level_shift = -1`:
 
 ```cpp
