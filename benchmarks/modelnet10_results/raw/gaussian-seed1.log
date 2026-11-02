@@ -1,0 +1,7 @@
+gaussian seed 1 epoch 1 loss 1.52025 test_acc 0.155 (1.52606 s)
+gaussian seed 1 epoch 2 loss 0.865769 test_acc 0.67 (0.287274 s)
+gaussian seed 1 epoch 3 loss 0.616881 test_acc 0.725 (0.263961 s)
+gaussian seed 1 epoch 4 loss 0.449022 test_acc 0.725 (0.259439 s)
+gaussian seed 1 epoch 5 loss 0.320837 test_acc 0.765 (0.244931 s)
+gaussian seed 1 epoch 6 loss 0.216324 test_acc 0.815 (0.285381 s)
+gaussian seed 1 acc 0.815 macroF1 0.811112 train_s 2.86704 active 147.02 params 110218

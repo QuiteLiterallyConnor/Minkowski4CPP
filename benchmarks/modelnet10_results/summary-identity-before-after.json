@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "baseline": "0e5c4fe",
+  "candidate": "7460c7e",
+  "shared_controls": "same counts, seeds, epochs, batch, learning rate, device and data_seed",
+  "mutation": "Gaussian training split SHA256 changed; point counts unchanged",
+  "before": "accepted incompatible datasets",
+  "after": "rejected incompatible datasets",
+  "diagnostic": "C:\\Users\\User\\Desktop\\SamaritanV2\\Backend\\.runtime\\tmp\\tmpbo8y81qa\\cohort\\uniform.json: dataset identity differs from gaussian.json; names, manifests and split hashes must match"
+}

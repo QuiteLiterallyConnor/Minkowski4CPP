@@ -1,0 +1,130 @@
+{
+  "status": "passed",
+  "source": "0a4b62a83a98b091497e996773c68b6f89c38a3c",
+  "started": "2026-11-02T20:33:59.0049236+01:00",
+  "executable_sha256": "EC62BA12F3E29C4B4C23F53C0BBD51296C2E77E805D970C69F990EEEF0C6C095",
+  "dataset_manifest_sha256": "983109BF609859ECCC4AE302E1AE966FB6A5537032D6F8C139022779F5F36E6C",
+  "seed": 3,
+  "epochs": 6,
+  "data": [
+    {
+      "split": "train",
+      "sha256": "AB5CF9C3D45FBACC8FA5E1E8FFEC86CDAB076276B736D4814E50342BAAFEE3C4"
+    },
+    {
+      "split": "test",
+      "sha256": "D4D0069E34F607A589AF5E067510201A9A03D514D645D016BA1CAD5D0825441F"
+    }
+  ],
+  "runs": [
+    {
+      "method": "uniform",
+      "arguments": [
+        "--method",
+        "uniform",
+        "--dataset-dir",
+        "C:\\Users\\User\\Work\\mink-lab\\datasets\\modelnet10\\subset40-20-p1024-s2026",
+        "--device",
+        "cuda",
+        "--epochs",
+        "6",
+        "--seed",
+        "3",
+        "--batch",
+        "16",
+        "--kmap-part-reuse-mb",
+        "512",
+        "--fused-apply",
+        "1",
+        "--deterministic",
+        "0",
+        "--output",
+        "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\modelnet-seed3\\uniform.json"
+      ],
+      "exit": 0,
+      "completed": "2026-11-02T20:34:26.7231772+01:00"
+    },
+    {
+      "method": "adaptive",
+      "arguments": [
+        "--method",
+        "adaptive",
+        "--dataset-dir",
+        "C:\\Users\\User\\Work\\mink-lab\\datasets\\modelnet10\\subset40-20-p1024-s2026",
+        "--device",
+        "cuda",
+        "--epochs",
+        "6",
+        "--seed",
+        "3",
+        "--batch",
+        "16",
+        "--kmap-part-reuse-mb",
+        "512",
+        "--fused-apply",
+        "1",
+        "--deterministic",
+        "0",
+        "--output",
+        "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\modelnet-seed3\\adaptive.json"
+      ],
+      "exit": 0,
+      "completed": "2026-11-02T20:34:46.7178843+01:00"
+    },
+    {
+      "method": "gaussian",
+      "arguments": [
+        "--method",
+        "gaussian",
+        "--dataset-dir",
+        "C:\\Users\\User\\Work\\mink-lab\\datasets\\modelnet10\\subset40-20-p1024-s2026",
+        "--device",
+        "cuda",
+        "--epochs",
+        "6",
+        "--seed",
+        "3",
+        "--batch",
+        "16",
+        "--kmap-part-reuse-mb",
+        "512",
+        "--fused-apply",
+        "1",
+        "--deterministic",
+        "0",
+        "--output",
+        "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\modelnet-seed3\\gaussian.json"
+      ],
+      "exit": 0,
+      "completed": "2026-11-02T20:35:02.9100605+01:00"
+    },
+    {
+      "method": "adaptive_gaussian",
+      "arguments": [
+        "--method",
+        "adaptive_gaussian",
+        "--dataset-dir",
+        "C:\\Users\\User\\Work\\mink-lab\\datasets\\modelnet10\\subset40-20-p1024-s2026",
+        "--device",
+        "cuda",
+        "--epochs",
+        "6",
+        "--seed",
+        "3",
+        "--batch",
+        "16",
+        "--kmap-part-reuse-mb",
+        "512",
+        "--fused-apply",
+        "1",
+        "--deterministic",
+        "0",
+        "--output",
+        "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\modelnet-seed3\\adaptive_gaussian.json"
+      ],
+      "exit": 0,
+      "completed": "2026-11-02T20:35:24.5384400+01:00"
+    }
+  ],
+  "completed": "2026-11-02T20:35:27.8958435+01:00"
+}
