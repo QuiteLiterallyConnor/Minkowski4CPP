@@ -18,6 +18,14 @@ enum class AdaptiveConvMode {
   VolumeWeighted,
   // Every leaf overlapping the tap box; weight = overlap volume / V_out.
   OverlapWeighted,
+  // Opt-in. Like CenterSampled while the leaf containing the tap point is at the output
+  // leaf's level or coarser (weight 1). When it is finer, or no leaf contains the tap point,
+  // the tap reads the average of the leaves inside the tap box (the output-sized cell around
+  // the tap point), weighted by overlap volume / total overlap volume. Coarse outputs over
+  // fine inputs (output_level_shift < 0, or coarse leaves next to refined regions) then read
+  // every child instead of the one child whose corner sits on the tap point. Identical to
+  // CenterSampled on uniform grids.
+  CenterAveraged,
 };
 
 struct AdaptiveKernelConfig {
