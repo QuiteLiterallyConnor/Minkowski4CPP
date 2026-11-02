@@ -246,7 +246,8 @@ using CacheKey = std::tuple<uint64_t, int, int, int>;
 // A part's pair arrays on a device (device composition, see compose_parts_device).
 struct PartDevice {
   at::Device device{at::kCPU};
-  at::Tensor in, out, weight; // int32, int32, float64 (undefined if unweighted)
+  at::Tensor in, out, weight; // indices: uint16 bits (kInt16) if narrow, else int32; float64 weights
+  bool narrow = false;        // local indices < 65536 stored in 16 bits (half the device memory)
 };
 
 struct PartMap {
@@ -491,9 +492,11 @@ std::mutex &part_device_mutex() {
 }
 
 // The device copies of the parts' pair arrays. Parts without one on `device` are uploaded
-// together: their arrays are packed into one int32 (and one float64) host buffer, copied with
-// one transfer each, and every part gets views into it. (A batch's buffer stays allocated until
-// all of its parts are freed.)
+// together: their arrays are packed into one 16-bit, one int32 (and one float64) host buffer,
+// copied with one transfer each, and every part gets views into them. A part whose local leaf
+// indices all fit in 16 bits (fewer than 65536 inputs and outputs, as for typical samples) is
+// stored narrow: 4 B per pair instead of 8. (A batch's buffers stay allocated until all of its
+// parts are freed.)
 std::vector<PartDevice> parts_on_device(const std::vector<std::shared_ptr<const PartMap>> &pm,
                                         const at::Device &device) {
   std::lock_guard<std::mutex> lock(part_device_mutex());
@@ -513,28 +516,52 @@ std::vector<PartDevice> parts_on_device(const std::vector<std::shared_ptr<const 
   if (missing.empty())
     return out;
   const bool weighted = pm[missing[0]]->weighted();
-  std::vector<int32_t> pairs;
+  const auto fits16 = [](const PartMap &a) {
+    int64_t n_out = 0;
+    for (int64_t c : a.out_counts)
+      n_out += c;
+    const int64_t limit = detail::cuda_part_compose_narrow_limit();
+    return static_cast<int64_t>(a.keys.size()) <= limit && n_out <= limit;
+  };
+  std::vector<uint16_t> pairs16;
+  std::vector<int32_t> pairs32;
   std::vector<double> weights;
   for (size_t p : missing) {
-    pairs.insert(pairs.end(), pm[p]->in.begin(), pm[p]->in.end());
-    pairs.insert(pairs.end(), pm[p]->out.begin(), pm[p]->out.end());
+    if (fits16(*pm[p])) {
+      pairs16.insert(pairs16.end(), pm[p]->in.begin(), pm[p]->in.end());
+      pairs16.insert(pairs16.end(), pm[p]->out.begin(), pm[p]->out.end());
+    } else {
+      pairs32.insert(pairs32.end(), pm[p]->in.begin(), pm[p]->in.end());
+      pairs32.insert(pairs32.end(), pm[p]->out.begin(), pm[p]->out.end());
+    }
     if (weighted)
       weights.insert(weights.end(), pm[p]->weight.begin(), pm[p]->weight.end());
   }
-  const auto dev_pairs =
-      torch::from_blob(pairs.data(), {static_cast<int64_t>(pairs.size())}, torch::kInt32).to(device);
-  at::Tensor dev_weights;
+  at::Tensor dev16, dev32, dev_weights;
+  if (!pairs16.empty()) // kInt16 carries the uint16 bits; the kernel reads them as uint16
+    dev16 = torch::from_blob(pairs16.data(), {static_cast<int64_t>(pairs16.size())}, torch::kInt16)
+                .to(device);
+  if (!pairs32.empty())
+    dev32 = torch::from_blob(pairs32.data(), {static_cast<int64_t>(pairs32.size())}, torch::kInt32)
+                .to(device);
   if (weighted)
     dev_weights = torch::from_blob(weights.data(), {static_cast<int64_t>(weights.size())},
                                    torch::kFloat64)
                       .to(device);
-  int64_t at = 0, wat = 0;
+  int64_t at16 = 0, at32 = 0, wat = 0;
   for (size_t p : missing) {
     const int64_t n = static_cast<int64_t>(pm[p]->in.size());
     PartDevice d;
     d.device = device;
-    d.in = dev_pairs.slice(0, at, at + n);
-    d.out = dev_pairs.slice(0, at + n, at + 2 * n);
+    d.narrow = fits16(*pm[p]);
+    const at::Tensor &buf = d.narrow ? dev16 : dev32;
+    int64_t &at = d.narrow ? at16 : at32;
+    if (buf.defined()) {
+      d.in = buf.slice(0, at, at + n);
+      d.out = buf.slice(0, at + n, at + 2 * n);
+    } else { // no pairs at all in this width (n == 0)
+      d.in = d.out = torch::empty({0}, torch::TensorOptions().device(device).dtype(torch::kInt32));
+    }
     at += 2 * n;
     if (weighted) {
       d.weight = dev_weights.slice(0, wat, wat + n);
@@ -597,6 +624,7 @@ AdaptiveKernelMap compose_parts_device(const std::vector<std::shared_ptr<const P
     table.push_back(reinterpret_cast<int64_t>(copies[p].out.data_ptr()));
     table.push_back(copies[p].weight.defined() ? reinterpret_cast<int64_t>(copies[p].weight.data_ptr())
                                                : int64_t(0));
+    table.push_back(copies[p].narrow ? 2 : 4);
   }
   int64_t n_in = 0, n_out = 0;
   for (size_t p = 0; p < np; ++p) {
@@ -764,6 +792,10 @@ int64_t &cuda_apply_map_group_bytes() {
 bool &cuda_part_compose() {
   static bool on = true;
   return on;
+}
+int64_t &cuda_part_compose_narrow_limit() {
+  static int64_t limit = 65536;
+  return limit;
 }
 } // namespace detail
 

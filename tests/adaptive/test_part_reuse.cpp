@@ -290,8 +290,11 @@ TEST(part_reuse_device_compose_matches_full_build) {
     for (int s = 0; s < 6; ++s)
         samples.push_back(make_sample(70 + s, 3, cfg));
     const torch::Device cuda(torch::kCUDA);
-    for (bool device_compose : {true, false}) {
+    // 16-bit device indices (default), 32-bit device indices (limit 0), host composition.
+    const std::vector<std::pair<bool, int64_t>> variants{{true, 65536}, {true, 0}, {false, 65536}};
+    for (const auto &[device_compose, narrow_limit] : variants) {
         minkowski::adaptive::detail::cuda_part_compose() = device_compose;
+        minkowski::adaptive::detail::cuda_part_compose_narrow_limit() = narrow_limit;
         for (auto mode : {AdaptiveConvMode::CenterSampled, AdaptiveConvMode::VolumeWeighted}) {
             for (int K : {3, 5}) {
                 for (int shift : {0, -1}) {
@@ -334,6 +337,7 @@ TEST(part_reuse_device_compose_matches_full_build) {
         }
     }
     minkowski::adaptive::detail::cuda_part_compose() = true;
+    minkowski::adaptive::detail::cuda_part_compose_narrow_limit() = 65536;
 }
 
 // A map composed on the device and then used for the same topology on the CPU (no host arrays

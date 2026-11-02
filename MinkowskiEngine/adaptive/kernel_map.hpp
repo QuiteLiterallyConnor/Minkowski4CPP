@@ -88,9 +88,12 @@ int64_t &cuda_apply_map_group_bytes();
 // leaf numbering, and the map's host arrays are filled only on request. Off: host composition
 // and one upload of the composed map, as before. Process-wide tuning/test hook.
 bool &cuda_part_compose();
+// Parts with at most this many input and output leaves keep 16-bit device indices (default
+// 65536, the most 16 bits can address). Test hook: 0 stores every part with 32-bit indices.
+int64_t &cuda_part_compose_narrow_limit();
 #ifdef USE_CUDA
 // kernel_map_cuda.cu. `table` (int64, on the device) holds `segments` rows (dst, q0, n, part),
-// then per part (in ptr, out ptr, weight ptr or 0), per part (input base, output base), then
+// then per part (in ptr, out ptr, weight ptr or 0, index width 2|4), per part (input base, output base), then
 // n_in input and n_out output leaf indices. Writes in/out_index (and *weight if given).
 void cuda_compose_parts(const at::Tensor &table, int64_t segments, int64_t parts,
                         int64_t n_in, int64_t n_out, at::Tensor &in_index, at::Tensor &out_index,
