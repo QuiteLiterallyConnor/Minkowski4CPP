@@ -149,8 +149,12 @@ auto smooth = interpolate(t, query, InterpMode::Multilinear);
 auto uniform = t.resample_uniform(2);
 ```
 
-Nearest interpolation returns the containing leaf's value. Queries outside
-every leaf return zeros. `other.resample_to(t)` aligns another tensor to
+Nearest interpolation returns the containing leaf's value. Multilinear
+interpolation averages the leaves overlapping a box the size of the containing
+leaf, centred on the query: it is continuous inside a level and across faces
+between equal-level leaves, but the box size changes where the containing
+leaf's level changes, so values can jump there. Queries outside every leaf
+return zeros. `other.resample_to(t)` aligns another tensor to
 `t`'s leaves; addition requires identical topology.
 
 Uniform resampling can expand a sparse hierarchy dramatically. The
