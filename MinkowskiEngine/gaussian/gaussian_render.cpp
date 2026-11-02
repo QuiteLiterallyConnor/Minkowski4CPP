@@ -535,11 +535,15 @@ RenderOutput render_gaussians(const at::Tensor &positions,
     means2d.retain_grad();
 
   // Clamp the viewing frustum used by the Jacobian to keep it stable near the
-  // image border.
-  const double limit_x = 1.3 * 0.5 * static_cast<double>(width) / camera.fx;
-  const double limit_y = 1.3 * 0.5 * static_cast<double>(height) / camera.fy;
-  const auto txc = tx.clamp(-limit_x, limit_x);
-  const auto tyc = ty.clamp(-limit_y, limit_y);
+  // image border: 15% of the image size beyond each edge. The limits are
+  // measured from the principal point, so they are asymmetric when cx != W/2
+  // (cropped or off-center intrinsics); for a centered principal point they
+  // equal the symmetric 1.3 x half-FOV clamp of 3DGS.
+  const double w = static_cast<double>(width), h = static_cast<double>(height);
+  const auto txc = tx.clamp(-(camera.cx + 0.15 * w) / camera.fx,
+                            (w - camera.cx + 0.15 * w) / camera.fx);
+  const auto tyc = ty.clamp(-(camera.cy + 0.15 * h) / camera.fy,
+                            (h - camera.cy + 0.15 * h) / camera.fy);
   const auto zeros = at::zeros_like(safe_z);
   const auto jacobian = at::stack(
       {at::stack({camera.fx / safe_z, zeros, -camera.fx * txc / safe_z}, 1),
@@ -548,11 +552,18 @@ RenderOutput render_gaussians(const at::Tensor &positions,
   const auto basis =
       quaternion_matrices(rotations) * scales.unsqueeze(1); // R * diag(s)
   const auto projected = at::matmul(at::matmul(jacobian, rotation), basis);
-  const auto cov2d = at::matmul(projected, projected.transpose(1, 2));
-  const auto a = cov2d.select(1, 0).select(1, 0) + kLowPass;
-  const auto b = cov2d.select(1, 0).select(1, 1);
-  const auto c = cov2d.select(1, 1).select(1, 1) + kLowPass;
-  const auto det = a * c - b * b;
+  // cov2d = M M^T for the 2x3 matrix M with rows m1, m2. Its determinant is
+  // computed with the Lagrange identity |m1|^2 |m2|^2 - (m1.m2)^2 =
+  // |m1 x m2|^2: a sum of squares, instead of a*c - b*b, which cancels
+  // catastrophically in float32 for long thin (needle) splats.
+  const auto m1 = projected.select(1, 0), m2 = projected.select(1, 1);
+  const auto cov_a = (m1 * m1).sum(1);
+  const auto b = (m1 * m2).sum(1);
+  const auto cov_c = (m2 * m2).sum(1);
+  const auto a = cov_a + kLowPass;
+  const auto c = cov_c + kLowPass;
+  const auto det = at::linalg_cross(m1, m2, 1).square().sum(1) +
+                   kLowPass * (cov_a + cov_c) + kLowPass * kLowPass;
   const auto inverse_det = 1.0 / det.clamp_min(1e-12);
   const auto conic_a = c * inverse_det;
   const auto conic_b = -b * inverse_det;
@@ -561,9 +572,12 @@ RenderOutput render_gaussians(const at::Tensor &positions,
   at::Tensor radii_long, visible, order_ids, bounds;
   {
     torch::NoGradGuard no_grad;
+    // Largest eigenvalue; mid^2 - det is evaluated as ((a - c) / 2)^2 + b^2,
+    // which cannot cancel.
     const auto mid = 0.5 * (a + c);
+    const auto half_diff = 0.5 * (a - c);
     const auto lambda =
-        mid + at::sqrt((mid * mid - det).clamp_min(0.1));
+        mid + at::sqrt((half_diff * half_diff + b * b).clamp_min(0.1));
     const auto radius = at::ceil(3.0 * at::sqrt(lambda));
     const auto mx = x2.detach(), my = y2.detach();
     visible = (z > camera.near_plane) & (det > 1e-12) &
@@ -573,7 +587,10 @@ RenderOutput render_gaussians(const at::Tensor &positions,
               (my + radius >= 0) & (my - radius < static_cast<double>(height));
     radii_long = at::where(visible, radius, at::zeros_like(radius)).to(at::kLong);
     const auto ids = visible.nonzero().squeeze(1);
-    const auto order = z.index_select(0, ids).argsort();
+    // Stable: Gaussians at exactly equal depth keep their index order, so the
+    // image does not depend on the sort implementation or device.
+    const auto order =
+        z.index_select(0, ids).argsort(/*stable=*/true, 0, false);
     order_ids = ids.index_select(0, order);
 
     const auto sx = mx.index_select(0, order_ids);
