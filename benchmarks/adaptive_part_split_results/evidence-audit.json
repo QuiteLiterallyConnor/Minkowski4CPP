@@ -1,0 +1,40 @@
+{
+  "status": "passed",
+  "findings": [
+    {
+      "experiment": "phase-cpu",
+      "raw_processes_reparsed": 60,
+      "summaries_recomputed": 10,
+      "binary_hashes_match": true,
+      "paired_order_and_all_recorded_workload_invariants_match": true
+    },
+    {
+      "experiment": "map-cpu",
+      "raw_processes_reparsed": 24,
+      "summaries_recomputed": 6,
+      "binary_hashes_match": true,
+      "paired_order_and_all_recorded_workload_invariants_match": true
+    },
+    {
+      "experiment": "map-cuda",
+      "raw_processes_reparsed": 24,
+      "summaries_recomputed": 10,
+      "binary_hashes_match": true,
+      "paired_order_and_all_recorded_workload_invariants_match": true
+    },
+    {
+      "registered_ctest_device": "cpu",
+      "passed": 5,
+      "failed": 0
+    },
+    {
+      "registered_ctest_device": "cuda",
+      "passed": 5,
+      "failed": 0
+    }
+  ],
+  "limits": [
+    "Audit of prior native executions; no new timings or container GPU execution.",
+    "Exact map order, values, gradients are covered by CTest; aggregate logs alone do not establish them."
+  ]
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "Algorithm": "SHA256",
+    "Hash": "8670BEF32B28A6727C6DF1501C19A61509F6BB4AC9414E1CD535A9E502C5969B",
+    "Path": "C:\\Users\\User\\Work\\mink-build\\device-compose-cpu\\adaptive_kmap_bench.split-baseline.exe"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "9BFFFCE65FA01D4CC272F409F6FFD488DD7DB26D82B687CBE7FB16AB155B01BD",
+    "Path": "C:\\Users\\User\\Work\\mink-build\\device-compose-cuda\\adaptive_kmap_bench.split-baseline.exe"
+  }
+]

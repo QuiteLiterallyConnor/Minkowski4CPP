@@ -1,0 +1,2 @@
+2026-11-02T20:10:19 [before] cpu_total_avg_3s=74,7% gpu(util,used,total)=46 %, 1141 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T20:10:41 [after] cpu_total_avg_2s=85,7% gpu(util,used,total)=37 %, 1141 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost

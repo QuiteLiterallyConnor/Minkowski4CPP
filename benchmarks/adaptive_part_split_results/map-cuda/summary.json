@@ -1,0 +1,162 @@
+[
+  {
+    "workload": "center",
+    "metric": "kmap_batch_first_epoch_ms",
+    "before": 139.757,
+    "after": 141.77800000000002,
+    "change_percent": 1.4460814127378319,
+    "faster": 4,
+    "before_range": [
+      101.681,
+      262.107
+    ],
+    "after_range": [
+      121.272,
+      201.6
+    ]
+  },
+  {
+    "workload": "center",
+    "metric": "kmap_batch_later_epochs_ms",
+    "before": 12.0645,
+    "after": 10.745999999999999,
+    "change_percent": -10.928757926146982,
+    "faster": 6,
+    "before_range": [
+      11.413,
+      14.709
+    ],
+    "after_range": [
+      9.973,
+      11.801
+    ]
+  },
+  {
+    "workload": "center",
+    "metric": "peak_working_set_mb",
+    "before": 3562.754,
+    "after": 3562.0235000000002,
+    "change_percent": -0.020503801272830913,
+    "faster": 4,
+    "before_range": [
+      3559.32,
+      3567.961
+    ],
+    "after_range": [
+      3558.707,
+      3563.578
+    ]
+  },
+  {
+    "workload": "center",
+    "metric": "cuda_max_alloc_mb",
+    "before": 784.768,
+    "after": 784.768,
+    "change_percent": 0.0,
+    "faster": 0,
+    "before_range": [
+      784.768,
+      784.768
+    ],
+    "after_range": [
+      784.768,
+      784.768
+    ]
+  },
+  {
+    "workload": "center",
+    "metric": "cuda_max_reserved_mb",
+    "before": 818.0,
+    "after": 818.0,
+    "change_percent": 0.0,
+    "faster": 0,
+    "before_range": [
+      818.0,
+      818.0
+    ],
+    "after_range": [
+      818.0,
+      818.0
+    ]
+  },
+  {
+    "workload": "volume",
+    "metric": "kmap_batch_first_epoch_ms",
+    "before": 163.764,
+    "after": 164.7095,
+    "change_percent": 0.5773552184851205,
+    "faster": 3,
+    "before_range": [
+      134.531,
+      204.004
+    ],
+    "after_range": [
+      130.011,
+      245.078
+    ]
+  },
+  {
+    "workload": "volume",
+    "metric": "kmap_batch_later_epochs_ms",
+    "before": 13.558,
+    "after": 12.2455,
+    "change_percent": -9.680631361557756,
+    "faster": 5,
+    "before_range": [
+      12.791,
+      16.865
+    ],
+    "after_range": [
+      11.642,
+      16.934
+    ]
+  },
+  {
+    "workload": "volume",
+    "metric": "peak_working_set_mb",
+    "before": 3604.1915,
+    "after": 3603.7925,
+    "change_percent": -0.011070443953931086,
+    "faster": 4,
+    "before_range": [
+      3599.965,
+      3611.074
+    ],
+    "after_range": [
+      3601.223,
+      3608.562
+    ]
+  },
+  {
+    "workload": "volume",
+    "metric": "cuda_max_alloc_mb",
+    "before": 1319.652,
+    "after": 1319.652,
+    "change_percent": 0.0,
+    "faster": 0,
+    "before_range": [
+      1319.652,
+      1319.652
+    ],
+    "after_range": [
+      1319.652,
+      1319.652
+    ]
+  },
+  {
+    "workload": "volume",
+    "metric": "cuda_max_reserved_mb",
+    "before": 1366.0,
+    "after": 1366.0,
+    "change_percent": 0.0,
+    "faster": 0,
+    "before_range": [
+      1366.0,
+      1366.0
+    ],
+    "after_range": [
+      1366.0,
+      1366.0
+    ]
+  }
+]
