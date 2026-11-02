@@ -1,7 +1,11 @@
 #include "ops.hpp"
 #include "adaptive_topology.hpp"
+#ifdef USE_CUDA
+#include "fused_apply.hpp"
+#endif
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <unordered_map>
@@ -20,29 +24,169 @@ void check_weight(const at::Tensor &weight, const AdaptiveKernelMap &m, int64_t 
     throw std::invalid_argument("weight must have shape [kernel_size^D, in_channels, out_channels]");
 }
 
-// Gather -> (optional per-pair weight) -> GEMM per kernel slot -> scatter-add.
-// `from`/`to` select the direction so the transposed convolution reuses the map.
-at::Tensor apply_map(const at::Tensor &x, const at::Tensor &weight, const AdaptiveKernelMap &m,
-                     const at::Tensor &from, const at::Tensor &to, int64_t n_out,
-                     bool weighted) {
-  const auto dev = x.device();
-  const int64_t cout = weight.size(2);
-  auto from_d = from.to(dev);
-  auto to_d = to.to(dev);
-  at::Tensor w_d;
-  if (weighted)
-    w_d = m.weight.to(dev).to(x.scalar_type());
-  auto wt = weight.to(x.scalar_type());
-  auto y = torch::zeros({n_out, cout}, x.options());
-  for (int64_t k = 0; k < m.num_kernels; ++k) {
-    const int64_t b = m.kernel_offsets[k], e = m.kernel_offsets[k + 1];
-    if (b == e)
-      continue;
-    auto xs = x.index_select(0, from_d.slice(0, b, e));
-    if (weighted)
-      xs = xs * w_d.slice(0, b, e).unsqueeze(1);
-    y.index_add_(0, to_d.slice(0, b, e), xs.matmul(wt[k]));
+#ifdef USE_CUDA
+// Pairs per atomic partial of the fused weight gradient (one block per chunk and channel tile).
+constexpr int64_t kFusedChunkRows = 256;
+
+// Autograd wrapper of the fused CUDA kernels (fused_apply_cuda.cu): forward, input gradient
+// and weight gradient are one launch each. Only x, the weight and the non-differentiable
+// index arrays are saved, so backward keeps no [pairs, C] gather alive.
+struct FusedApplyMap : public torch::autograd::Function<FusedApplyMap> {
+  static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &x,
+                            const at::Tensor &w, const at::Tensor &from, const at::Tensor &to,
+                            const at::Tensor &pw, const TileTable &tiles,
+                            const TileTable &chunks, int64_t n_out,
+                            const std::vector<int64_t> &offsets) {
+    auto y = torch::zeros({n_out, w.size(2)}, x.options());
+    detail::cuda_fused_gather_gemm_scatter(x, w, from, to, pw, tiles, /*trans_w=*/false, y);
+    ctx->save_for_backward({x, w, from, to, pw, tiles.blocks, chunks.blocks});
+    ctx->saved_data["offsets"] = offsets;
+    ctx->saved_data["tiles"] = std::vector<int64_t>{tiles.count, tiles.rows};
+    ctx->saved_data["chunks"] = std::vector<int64_t>{chunks.count, chunks.rows};
+    return y;
   }
+
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext *ctx,
+                                                 torch::autograd::variable_list grads) {
+    const auto s = ctx->get_saved_variables();
+    const at::Tensor &x = s[0], &w = s[1], &from = s[2], &to = s[3], &pw = s[4];
+    const auto tn = ctx->saved_data["tiles"].toIntVector();
+    const auto cn = ctx->saved_data["chunks"].toIntVector();
+    const TileTable tiles{at::Tensor(), s[5], tn[0], tn[1]}, chunks{at::Tensor(), s[6], cn[0], cn[1]};
+    if (!grads[0].defined())
+      return {torch::zeros_like(x), torch::zeros_like(w), {}, {}, {}, {}, {}, {}, {}};
+    const at::Tensor gy = grads[0].contiguous();
+    at::Tensor gx, gw;
+    if (torch::GradMode::is_enabled()) {
+      // create_graph=true: differentiable formulation (same math) so higher-order gradients
+      // work as on the per-slot path.
+      if (ctx->needs_input_grad(0))
+        gx = FusedApplyMap::apply(gy, w.transpose(1, 2).contiguous(), to, from, pw, tiles, chunks,
+                                  x.size(0), ctx->saved_data["offsets"].toIntVector());
+      if (ctx->needs_input_grad(1)) {
+        const auto off = ctx->saved_data["offsets"].toIntVector();
+        std::vector<int64_t> sizes(off.size() - 1);
+        for (size_t k = 0; k + 1 < off.size(); ++k)
+          sizes[k] = off[k + 1] - off[k];
+        auto xs = x.index_select(0, from);
+        if (pw.numel() > 0)
+          xs = xs * pw.unsqueeze(1);
+        auto xb = xs.split_with_sizes(sizes, 0);
+        auto gb = gy.index_select(0, to).split_with_sizes(sizes, 0);
+        std::vector<at::Tensor> parts;
+        for (size_t k = 0; k < sizes.size(); ++k)
+          parts.push_back(xb[k].t().matmul(gb[k]));
+        gw = torch::stack(parts, 0);
+      }
+      return {gx, gw, {}, {}, {}, {}, {}, {}, {}};
+    }
+    if (ctx->needs_input_grad(0)) {
+      gx = torch::zeros_like(x);
+      detail::cuda_fused_gather_gemm_scatter(gy, w, to, from, pw, tiles, /*trans_w=*/true, gx);
+    }
+    if (ctx->needs_input_grad(1)) {
+      gw = torch::zeros_like(w);
+      detail::cuda_fused_weight_grad(x, gy, from, to, pw, chunks, gw);
+    }
+    return {gx, gw, {}, {}, {}, {}, {}, {}, {}};
+  }
+};
+#endif
+
+// Gather -> (optional per-pair weight) -> GEMM per kernel slot -> scatter-add.
+// `transpose` swaps the direction so the transposed convolution reuses the map.
+// The map's index/weight arrays come from the entry's device cache (uploaded once per
+// device/dtype). On CUDA one gather, one weight multiply and one scatter-add cover all kernel
+// slots; only the GEMM runs per slot, on row blocks of the gathered features. The pairs are sorted by
+// slot, so the scatter-add sees the same rows in the same order as one scatter per slot did.
+// split_with_sizes / unbind (not per-slot slice / select) keep the backward pass to one
+// concatenation each instead of one full-size zero-filled gradient per slot.
+at::Tensor apply_map(const at::Tensor &x, const at::Tensor &weight, const KernelMapEntry &entry,
+                     bool transpose, int64_t n_out, bool weighted) {
+  const AdaptiveKernelMap &m = entry.map;
+  const int64_t cout = weight.size(2);
+  auto arrays = entry.device->get(m, x.device(), x.scalar_type(), weighted);
+  const at::Tensor &from_d = transpose ? arrays.out_index : arrays.in_index;
+  const at::Tensor &to_d = transpose ? arrays.in_index : arrays.out_index;
+#ifdef USE_CUDA
+  // Fused path: one launch per direction for all kernel slots (see FusedApplyMap). Not used
+  // in deterministic mode (its atomics make float sums order-dependent).
+  if (x.is_cuda() && detail::cuda_apply_map_fused() &&
+      !at::globalContext().deterministicAlgorithms() &&
+      (x.scalar_type() == at::kFloat || x.scalar_type() == at::kDouble)) {
+    auto tiles = entry.device->tiles(m, x.device(), detail::fused_tile_rows(x.size(1), cout));
+    auto chunks = entry.device->tiles(m, x.device(), kFusedChunkRows);
+    auto pw = weighted ? arrays.weight : at::empty({0}, x.options());
+    return FusedApplyMap::apply(x.contiguous(), weight.to(x.scalar_type()).contiguous(), from_d,
+                                to_d, pw, tiles, chunks, n_out, m.kernel_offsets);
+  }
+#endif
+  auto y = torch::zeros({n_out, cout}, x.options());
+  if (!x.is_cuda()) {
+    // Host path: the per-slot formulation. Its temporaries stay small (one slot at a time),
+    // which measured faster on the CPU than materialising the full [P, C] gather/products
+    // (large fresh allocations), and it keeps CPU results bit-identical to earlier versions.
+    auto wt = weight.to(x.scalar_type());
+    bool any = false;
+    for (int64_t k = 0; k < m.num_kernels; ++k) {
+      const int64_t b = m.kernel_offsets[k], e = m.kernel_offsets[k + 1];
+      if (b == e)
+        continue;
+      any = true;
+      auto xs = x.index_select(0, from_d.slice(0, b, e));
+      if (weighted)
+        xs = xs * arrays.weight.slice(0, b, e).unsqueeze(1);
+      y.index_add_(0, to_d.slice(0, b, e), xs.matmul(wt[k]));
+    }
+    if (!any) { // keep y connected to x and weight (empty batch -> zero gradients)
+      auto none = from_d.slice(0, 0, 0);
+      y.index_add_(0, none, x.index_select(0, none).matmul(wt[0]));
+    }
+    return y;
+  }
+  // Device path: one gather and one weight multiply over all pairs (split per slot with
+  // split_with_sizes, so backward is one concatenation and one input-gradient scatter), then
+  // consecutive kernel slots are grouped while their products fit the temporary budget
+  // (detail::cuda_apply_map_group_bytes): one GEMM per slot, one concatenation and one
+  // scatter-add per group. Launches per call drop from ~4 per slot to ~1 per slot + 2 per group
+  // + 2, and the [pairs, C_out] products stay bounded by the budget instead of growing with the
+  // whole map (the gathered inputs, which autograd saves for the weight gradient, scale with
+  // the map as in the per-slot loop).
+  const std::vector<at::Tensor> wk = weight.to(x.scalar_type()).unbind(0);
+  auto xs = x.index_select(0, from_d);
+  if (weighted)
+    xs = xs * arrays.weight.unsqueeze(1);
+  const auto &off = m.kernel_offsets;
+  std::vector<int64_t> sizes(static_cast<size_t>(m.num_kernels));
+  for (int64_t k = 0; k < m.num_kernels; ++k)
+    sizes[static_cast<size_t>(k)] = off[k + 1] - off[k];
+  const std::vector<at::Tensor> blocks = xs.split_with_sizes(sizes, 0);
+  const int64_t budget = detail::cuda_apply_map_group_bytes();
+  const int64_t row_bytes = 2 * cout * x.element_size(); // products + their concatenation
+  const int64_t cap =
+      budget > 0 ? std::max<int64_t>(1, budget / std::max<int64_t>(1, row_bytes)) : INT64_MAX;
+  bool any = false;
+  for (int64_t k0 = 0; k0 < m.num_kernels;) {
+    int64_t k1 = k0 + 1;
+    while (k1 < m.num_kernels && off[k1 + 1] - off[k0] <= cap)
+      ++k1;
+    if (off[k1] > off[k0]) {
+      any = true;
+      std::vector<at::Tensor> parts;
+      parts.reserve(static_cast<size_t>(k1 - k0));
+      for (int64_t k = k0; k < k1; ++k)
+        if (sizes[static_cast<size_t>(k)] > 0)
+          parts.push_back(blocks[static_cast<size_t>(k)].matmul(wk[k]));
+      // Slicing the (non-differentiable) index array is free.
+      y.index_add_(0, to_d.slice(0, off[k0], off[k1]),
+                   parts.size() == 1 ? parts[0] : torch::cat(parts, 0));
+    }
+    k0 = k1;
+  }
+  // No pairs (e.g. an empty input): a zero-row product keeps y connected to x and weight, so
+  // backward() on an empty batch yields zero gradients instead of an error.
+  if (!any)
+    y.index_add_(0, to_d, xs.matmul(wk[0]));
   return y;
 }
 
@@ -53,9 +197,8 @@ AdaptiveSparseTensor adaptive_convolution(const AdaptiveSparseTensor &input,
                                           const AdaptiveKernelConfig &config) {
   auto entry = KernelMapCache::instance().get_or_build(input, config);
   check_weight(weight, entry.map, input.channels());
-  auto y = apply_map(input.features(), weight, entry.map, entry.map.in_index,
-                     entry.map.out_index, entry.out_topology->size(),
-                     config.mode != AdaptiveConvMode::CenterSampled);
+  auto y = apply_map(input.features(), weight, entry, /*transpose=*/false,
+                     entry.out_topology->size(), config.mode != AdaptiveConvMode::CenterSampled);
   return AdaptiveSparseTensor::from_topology(entry.out_topology, y);
 }
 
@@ -69,8 +212,7 @@ AdaptiveSparseTensor adaptive_convolution_transpose(const AdaptiveSparseTensor &
     throw std::invalid_argument(
         "transposed convolution input does not match the forward convolution output topology");
   check_weight(weight, entry.map, input.channels());
-  auto y = apply_map(input.features(), weight, entry.map, entry.map.out_index,
-                     entry.map.in_index, reference.size(),
+  auto y = apply_map(input.features(), weight, entry, /*transpose=*/true, reference.size(),
                      config.mode != AdaptiveConvMode::CenterSampled);
   return AdaptiveSparseTensor::from_topology(reference.topology(), y);
 }

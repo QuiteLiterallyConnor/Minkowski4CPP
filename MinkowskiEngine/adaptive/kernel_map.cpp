@@ -1,4 +1,7 @@
 #include "kernel_map.hpp"
+#ifdef USE_CUDA
+#include "fused_apply.hpp"
+#endif
 #include "adaptive_topology.hpp"
 
 #include <algorithm>
@@ -205,6 +208,85 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
 using CacheKey = std::tuple<uint64_t, int, int, int>;
 
 } // namespace
+
+KernelMapDeviceCache::Slot &KernelMapDeviceCache::slot_for(const AdaptiveKernelMap &map,
+                                                            const at::Device &device) {
+  for (auto &s : slots_)
+    if (s.device == device)
+      return s;
+  Slot s;
+  s.device = device;
+  // One upload per index array; `to` is a no-op for host maps used on the CPU.
+  s.in_index = map.in_index.to(device);
+  s.out_index = map.out_index.to(device);
+  slots_.push_back(std::move(s));
+  return slots_.back();
+}
+
+TileTable KernelMapDeviceCache::tiles(const AdaptiveKernelMap &map, const at::Device &device,
+                                      int64_t rows) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Slot &slot = slot_for(map, device);
+  for (const auto &t : slot.tiles)
+    if (t.rows == rows)
+      return t;
+  const auto &off = map.kernel_offsets;
+  std::vector<int64_t> table(off.begin(), off.end());
+  table.push_back(0);
+  for (size_t k = 0; k + 1 < off.size(); ++k)
+    table.push_back(table.back() + (off[k + 1] - off[k] + rows - 1) / rows);
+  TileTable t;
+  t.rows = rows;
+  t.count = table.back();
+  t.slots = torch::tensor(table, torch::kInt64).to(device);
+#ifdef USE_CUDA
+  if (device.is_cuda())
+    t.blocks = detail::cuda_expand_tiles(t.slots, map.num_kernels, t.count, rows);
+#endif
+  if (!t.blocks.defined()) {
+    std::vector<int64_t> blocks;
+    blocks.reserve(static_cast<size_t>(3 * t.count));
+    for (size_t k = 0; k + 1 < off.size(); ++k)
+      for (int64_t b = off[k]; b < off[k + 1]; b += rows) {
+        blocks.push_back(b);
+        blocks.push_back(std::min(b + rows, off[k + 1]));
+        blocks.push_back(static_cast<int64_t>(k));
+      }
+    t.blocks = torch::tensor(blocks, torch::kInt64).view({t.count, 3}).to(device);
+  }
+  slot.tiles.push_back(t);
+  return t;
+}
+
+KernelMapDeviceCache::Arrays KernelMapDeviceCache::get(const AdaptiveKernelMap &map,
+                                                       const at::Device &device,
+                                                       at::ScalarType dtype, bool with_weight) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Slot *slot = &slot_for(map, device);
+  Arrays a{slot->in_index, slot->out_index, at::Tensor()};
+  if (with_weight) {
+    for (const auto &w : slot->weights)
+      if (w.first == dtype)
+        a.weight = w.second;
+    if (!a.weight.defined()) {
+      // Same conversion order as before caching (move, then cast) so values are unchanged.
+      a.weight = map.weight.to(device).to(dtype);
+      slot->weights.emplace_back(dtype, a.weight);
+    }
+  }
+  return a;
+}
+
+namespace detail {
+int64_t &cuda_apply_map_group_bytes() {
+  static int64_t bytes = int64_t(32) << 20;
+  return bytes;
+}
+bool &cuda_apply_map_fused() {
+  static bool on = true;
+  return on;
+}
+} // namespace detail
 
 struct KernelMapCache::Impl {
   mutable std::mutex mutex;
