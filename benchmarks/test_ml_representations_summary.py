@@ -32,6 +32,58 @@ def run_record(method="uniform", seed=1):
 
 
 class SummaryCliTests(unittest.TestCase):
+    def external_record(self, method="uniform", seed=1):
+        record = run_record(method, seed)
+        record.update(dataset="ModelNet10", dataset_manifest={
+            "dataset": "ModelNet10", "format": "minkowski4cpp-points-v1",
+            "splits": {split: {"sha256": str(index) * 64} for index, split in enumerate(("train", "test"))}})
+        return record
+
+    def test_external_dataset_identity_must_match_even_with_same_counts(self):
+        for mutation in ("name", "train", "test", "normalization"):
+            with self.subTest(mutation=mutation):
+                a, b = self.external_record(), self.external_record("gaussian")
+                if mutation == "name":
+                    b["dataset"] = b["dataset_manifest"]["dataset"] = "different-data"
+                elif mutation == "normalization":
+                    b["dataset_manifest"]["normalization"] = "different-preprocessing"
+                else:
+                    b["dataset_manifest"]["splits"][mutation]["sha256"] = "f" * 64
+                self.assert_rejected([a, b], diagnostic="dataset identity differs")
+
+    def test_external_manifests_are_required_and_well_formed(self):
+        for mutation in ("missing", "null", "list", "wrong-name", "bad-hash", "missing-split"):
+            with self.subTest(mutation=mutation):
+                record = self.external_record()
+                if mutation == "missing":
+                    del record["dataset_manifest"]
+                elif mutation == "null":
+                    record["dataset_manifest"] = None
+                elif mutation == "list":
+                    record["dataset_manifest"] = []
+                elif mutation == "wrong-name":
+                    record["dataset_manifest"]["dataset"] = "another"
+                elif mutation == "bad-hash":
+                    record["dataset_manifest"]["splits"]["train"]["sha256"] = "bad"
+                else:
+                    del record["dataset_manifest"]["splits"]["test"]
+                self.assert_rejected([record], diagnostic="dataset_manifest")
+
+    def test_identified_and_legacy_runs_cannot_mix(self):
+        record = run_record("gaussian")
+        record.update(dataset="procedural_shapes10", dataset_manifest=None)
+        self.assert_rejected([run_record(), record], diagnostic="dataset identity differs")
+
+    def test_matching_external_and_procedural_cohorts_are_valid(self):
+        records = [self.external_record(seed=seed) for seed in (1, 2)]
+        result, _ = self.invoke(records)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Dataset: ModelNet10", result.stdout)
+        for record in records:
+            record.update(dataset="procedural_shapes10", dataset_manifest=None)
+        result, _ = self.invoke(records)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def invoke(self, records=(), extra_text=None, csv_output=False, methods="observed", seeds=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

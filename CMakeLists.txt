@@ -675,6 +675,8 @@ if(MINK_BUILD_ML_EXPERIMENTS AND MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
     add_test(NAME point_dataset_tests COMMAND point_dataset_tests)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME ml_summary_tests
+            COMMAND "${Python3_EXECUTABLE}" -I -B "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/test_ml_representations_summary.py")
         add_test(NAME modelnet_preprocessing_tests
             COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_prepare_modelnet10.py")
     endif()

@@ -14,6 +14,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -75,10 +76,36 @@ def invalid_constant(value):
     raise ValueError(f"nonfinite JSON constant: {value}")
 
 
+def dataset_identity(run):
+    # Older procedural runs predate these fields. Preserve that cohort, but never
+    # combine an unidentified historical run with an explicitly identified one.
+    if "dataset" not in run and "dataset_manifest" not in run:
+        return ("legacy-unidentified", None)
+    name = run.get("dataset")
+    require(isinstance(name, str) and bool(name.strip()), "dataset must be a nonempty name")
+    require("dataset_manifest" in run, "dataset_manifest is required for identified datasets")
+    manifest = run["dataset_manifest"]
+    if manifest is None:
+        require(name == "procedural_shapes10", "external dataset requires its dataset_manifest")
+    else:
+        require(isinstance(manifest, dict), "dataset_manifest must be an object or null")
+        require(manifest.get("dataset") == name, "dataset_manifest name differs from dataset")
+        require(manifest.get("format") == "minkowski4cpp-points-v1", "unsupported dataset_manifest format")
+        splits = manifest.get("splits")
+        require(isinstance(splits, dict), "dataset_manifest requires train/test split identities")
+        for split in ("train", "test"):
+            row = splits.get(split)
+            require(isinstance(row, dict) and isinstance(row.get("sha256"), str)
+                    and re.fullmatch(r"[a-fA-F0-9]{64}", row["sha256"]) is not None,
+                    f"dataset_manifest {split} requires a SHA256 identity")
+    return (name, manifest)
+
+
 def validate_run(run):
     require(isinstance(run, dict), "run must be a JSON object")
     require(run.get("method") in ORDER, "method must be uniform, adaptive, gaussian or adaptive_gaussian")
     require(run.get("device") in ("cpu", "cuda"), "device must identify the actual cpu or cuda execution")
+    dataset_identity(run)
     integer(run, "seed")
     integer(run, "data_seed", 0)
     integer(run, "epochs", 1)
@@ -135,6 +162,8 @@ def load_runs(root, expected_methods, expected_seeds):
             require(identity not in identities,
                     f"duplicate method/seed {identity}; first file: {identities.get(identity)}")
             if baseline is not None:
+                require(dataset_identity(run) == dataset_identity(baseline),
+                        f"dataset identity differs from {baseline_path.name}; names, manifests and split hashes must match")
                 for key in SHARED_CONTROLS:
                     require(run[key] == baseline[key],
                             f"shared control {key} differs from {baseline_path.name}: {run[key]!r} != {baseline[key]!r}")
@@ -177,7 +206,9 @@ def fmt(values, scale, digits):
 
 def render(runs):
     methods = [m for m in ORDER if m in runs]
-    lines = ["| method | seeds | " + " | ".join(h for _, h, _, _ in METRICS) + " |",
+    dataset = dataset_identity(runs[methods[0]][0])[0]
+    lines = [f"Dataset: {dataset}. Architectures and input features may differ between methods.", "",
+             "| method | seeds | " + " | ".join(h for _, h, _, _ in METRICS) + " |",
              "|---" * (len(METRICS) + 2) + "|"]
     for m in methods:
         rs = runs[m]
