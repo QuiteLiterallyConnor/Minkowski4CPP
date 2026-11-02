@@ -150,6 +150,137 @@ TEST(gradient_refine_split_and_coarsen_sum_are_linear) {
     CHECK(torch::isfinite(f.grad()).all().item<bool>());
 }
 
+// docs/adaptive.md: "Feature computations are built from torch operations and support
+// autograd". revoxelize_from_points rebuilds leaf features from the source point features, so
+// gradients must reach them (they used to be detached in from_points).
+namespace {
+
+// The autograd-contract checks below run with features (and weights) on `dev`; the CUDA variants
+// skip when no GPU is present. Points and topology always stay on the host.
+void check_revoxelize_gradient(torch::Device dev) {
+    torch::manual_seed(6);
+    auto pts = torch::rand({40, 3}, torch::kFloat64) * 16.0;
+    auto f0 = torch::randn({40, 2}, torch::kFloat64).to(dev);
+    const AxisAlignedRegion roi{{0, 0, 0}, {8, 8, 8}};
+    auto shape = AdaptiveSparseTensor::from_points(pts, f0, make_config());
+    shape.refine(roi, 2);
+    auto probe = torch::randn({shape.size(), 2}, torch::kFloat64).to(dev);
+    auto loss = [&](const at::Tensor& f) {
+        auto t = AdaptiveSparseTensor::from_points(pts, f, make_config());
+        t.refine(roi, 2);
+        t.revoxelize_from_points();
+        CHECK(t.features().device().type() == dev.type());
+        return (t.features() * probe).sum();
+    };
+    auto f = f0.clone().set_requires_grad(true);
+    loss(f).backward();
+    CHECK(f.grad().defined());
+    CHECK(f.grad().device().type() == dev.type());
+    auto num = numerical_grad([&](const at::Tensor& x) { return loss(x).item<double>(); },
+                              f0.clone());
+    CHECK_ALLCLOSE(f.grad().cpu(), num.cpu(), 1e-5, 1e-6);
+    CHECK(f.grad().abs().sum().item<double>() > 0.0);
+}
+
+void check_empty_inputs_connected(torch::Device dev) {
+    auto opt = torch::TensorOptions(torch::kFloat64).device(dev);
+    auto w = torch::randn({27, 4, 5}, opt).set_requires_grad(true);
+    auto wt = torch::randn({27, 5, 4}, opt).set_requires_grad(true);
+    auto f = torch::zeros({0, 4}, opt).set_requires_grad(true);
+    const auto empty_points = torch::zeros({0, 3}, torch::kFloat64);
+    for (auto mode : {AdaptiveConvMode::CenterSampled, AdaptiveConvMode::VolumeWeighted,
+                      AdaptiveConvMode::OverlapWeighted}) {
+        for (int shift : {0, -1}) {
+            auto t = AdaptiveSparseTensor::from_points(empty_points, f, make_config());
+            CHECK(t.features().requires_grad());
+            CHECK(t.features().device().type() == dev.type());
+            AdaptiveKernelConfig kc;
+            kc.mode = mode;
+            kc.output_level_shift = shift;
+            w.mutable_grad() = at::Tensor();
+            wt.mutable_grad() = at::Tensor();
+            auto out = adaptive_convolution(t, w, kc);
+            auto back = adaptive_convolution_transpose(out, wt, kc, t);
+            CHECK(back.features().requires_grad());
+            CHECK(back.features().device().type() == dev.type());
+            (adaptive_global_avg_pool(back).sum() +
+             interpolate(out, torch::rand({3, 3}, torch::kFloat64)).sum())
+                .backward();
+            CHECK(w.grad().defined() && wt.grad().defined() && f.grad().defined());
+            CHECK(w.grad().device().type() == dev.type());
+            CHECK_NEAR(w.grad().abs().sum().item<double>(), 0.0, 0.0);
+            CHECK_NEAR(wt.grad().abs().sum().item<double>(), 0.0, 0.0);
+        }
+    }
+    auto t = AdaptiveSparseTensor::from_points(empty_points, f, make_config());
+    CHECK(t.resample_to(t).features().requires_grad());
+    CHECK(t.resample_uniform(1).features().requires_grad());
+}
+
+void check_interpolation_without_hits(torch::Device dev) {
+    auto base = make_mixed(2);
+    auto f = base.features().to(dev).clone().set_requires_grad(true);
+    auto far = torch::full({2, 3}, 1000.0, torch::kFloat64);
+    for (auto mode : {InterpMode::Nearest, InterpMode::Multilinear}) {
+        auto y = interpolate(base.with_features(f), far, mode);
+        CHECK(y.device().type() == dev.type());
+        CHECK_NEAR(y.abs().sum().item<double>(), 0.0, 0.0);
+        y.sum().backward();
+        CHECK(f.grad().defined());
+        CHECK_NEAR(f.grad().abs().sum().item<double>(), 0.0, 0.0);
+        f.mutable_grad() = at::Tensor();
+    }
+}
+
+void require_cuda() {
+    if (!torch::cuda::is_available()) throw mink_test::Skip("CUDA not available");
+}
+
+}  // namespace
+
+TEST(gradient_revoxelize_from_points_reaches_point_features) {
+    check_revoxelize_gradient(torch::kCPU);
+}
+
+TEST(gradient_revoxelize_from_points_reaches_point_features_cuda) {
+    require_cuda();
+    check_revoxelize_gradient(torch::kCUDA);
+}
+
+// Point-driven refinement reads the (now attached) source features only to make topology
+// decisions; that must neither need nor break autograd.
+TEST(gradient_refine_by_variance_with_attached_point_features) {
+    torch::manual_seed(7);
+    auto pts = torch::rand({40, 3}, torch::kFloat64) * 16.0;
+    auto f = torch::randn({40, 2}, torch::kFloat64).set_requires_grad(true);
+    auto t = AdaptiveSparseTensor::from_points(pts, f * 2.0, make_config());
+    const auto before = t.size();
+    t.refine_by_variance(0.1);
+    t.refine_by_density(1);
+    CHECK(t.size() > before);
+    t.features().sum().backward();
+    CHECK(f.grad().defined());
+}
+
+// An empty batch must not break a training step: outputs stay in the graph, so backward()
+// runs and yields zero gradients for the weight and the input features.
+TEST(gradient_empty_inputs_stay_connected_to_the_graph) { check_empty_inputs_connected(torch::kCPU); }
+
+TEST(gradient_empty_inputs_stay_connected_to_the_graph_cuda) {
+    require_cuda();
+    check_empty_inputs_connected(torch::kCUDA);
+}
+
+// Queries that miss every leaf of a non-empty tensor return zeros that are still differentiable.
+TEST(gradient_interpolation_without_hits_is_connected) {
+    check_interpolation_without_hits(torch::kCPU);
+}
+
+TEST(gradient_interpolation_without_hits_is_connected_cuda) {
+    require_cuda();
+    check_interpolation_without_hits(torch::kCUDA);
+}
+
 TEST(gradient_topology_decisions_are_not_differentiable) {
     auto base = make_mixed(2);
     CHECK(!base.coordinates().requires_grad());

@@ -53,8 +53,8 @@ at::Tensor remap_features(const at::Tensor &f, const std::vector<int64_t> &src,
     g = g * sc;
   }
   auto out = torch::zeros({nnew, C}, f.options());
-  if (M == 0)
-    return out;
+  if (M == 0) // still record the (empty) dependency on f so the output stays in the graph
+    return out.index_add_(0, dst_t, g);
   switch (reduction) {
   case Reduction::Sum:
     return out.index_add_(0, dst_t, g);
@@ -328,7 +328,9 @@ AdaptiveSparseTensor AdaptiveSparseTensor::from_points(const at::Tensor &points,
                               static_cast<int64_t>(sorted.size()), Reduction::Mean);
   auto source = std::make_shared<SourcePoints>();
   source->points = pts;
-  source->features = features.detach();
+  // Not detached: revoxelize_from_points() rebuilds leaf features from these, and gradients
+  // must reach the point features through it (refinement criteria read them under no_grad).
+  source->features = features;
   return from_topology(Topology::make(cfg, std::move(sorted)), feats, source);
 }
 
@@ -489,6 +491,7 @@ void AdaptiveSparseTensor::refine_by_variance(double threshold, bool drop_empty)
     std::vector<char> sel(static_cast<size_t>(t.size()), 0);
     bool any = false;
     if (!pidx.empty()) {
+      torch::NoGradGuard no_grad; // the variance only drives a topology decision
       auto x = source_->features.index_select(0, index_tensor(pidx, source_->features.device()))
                    .to(torch::kFloat64)
                    .cpu();

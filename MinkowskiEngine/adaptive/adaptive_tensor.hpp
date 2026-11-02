@@ -27,7 +27,7 @@ struct Topology;
 // point-driven refinement criteria and by revoxelize_from_points().
 struct SourcePoints {
   at::Tensor points;   // [P, D] double, CPU
-  at::Tensor features; // [P, C]
+  at::Tensor features; // [P, C], kept attached to the autograd graph
 };
 
 // Sparse tensor whose active voxels (leaves) can sit at different refinement
@@ -104,7 +104,8 @@ public:
                      &criterion,
                  bool drop_empty = false);
   // Recomputes features of the current leaves from the source points (mean
-  // per leaf; leaves containing no point get zeros).
+  // per leaf; leaves containing no point get zeros). Differentiable w.r.t. the
+  // point features passed to from_points (detach them first to opt out).
   void revoxelize_from_points();
 
   AdaptiveSparseTensor with_features(at::Tensor features) const;
