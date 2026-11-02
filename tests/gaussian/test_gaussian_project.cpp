@@ -13,6 +13,7 @@
 #include "utils/test_framework.hpp"
 
 using namespace minkowski::gaussian;
+namespace gd = minkowski::gaussian::detail;
 
 namespace {
 
@@ -58,7 +59,7 @@ struct Result {
 };
 
 Result run(const Scene &base, const Camera &cam, bool fused) {
-  detail::cuda_fused_projection() = fused;
+  gd::cuda_fused_projection() = fused;
   Scene s;
   const std::initializer_list<std::pair<at::Tensor *, const at::Tensor *>> fields{
       {&s.positions, &base.positions}, {&s.rotations, &base.rotations},
@@ -70,7 +71,7 @@ Result run(const Scene &base, const Camera &cam, bool fused) {
   const auto p_img = torch::randn_like(out.image), p_d = torch::randn_like(out.depth),
              p_a = torch::randn_like(out.alpha);
   ((out.image * p_img).sum() + (out.depth * p_d).sum() + (out.alpha * p_a).sum()).backward();
-  detail::cuda_fused_projection() = true;
+  gd::cuda_fused_projection() = true;
   Result r{out.image.detach(), out.depth.detach(), out.alpha.detach(), {}, out.visible,
            out.radii};
   for (const auto *t : {&s.positions, &s.rotations, &s.scales, &s.opacities, &s.colors})
@@ -91,7 +92,7 @@ void check_close(const at::Tensor &a, const at::Tensor &b, double rtol, double a
 
 // The LibTorch projection of render_gaussians, in float64, returning the 10 kernel columns.
 at::Tensor reference_projection(const at::Tensor &p, const at::Tensor &q, const at::Tensor &s,
-                                const at::Tensor &w2c, const detail::ProjectParams &k) {
+                                const at::Tensor &w2c, const gd::ProjectParams &k) {
   const auto R = w2c.slice(1, 0, 3), t = w2c.select(1, 3);
   const auto cam = at::matmul(p, R.transpose(0, 1)) + t;
   const auto z = cam.select(1, 2);
@@ -149,7 +150,7 @@ TEST(gaussian_fused_projection_matches_float64_reference) {
   const auto scene = make_scene(4000, 23, dev);
   const auto cam = make_camera(128, 96, -11.0);
   const double w = 128, h = 96;
-  const detail::ProjectParams k{static_cast<float>(cam.fx), static_cast<float>(cam.fy),
+  const gd::ProjectParams k{static_cast<float>(cam.fx), static_cast<float>(cam.fy),
                                 static_cast<float>(cam.cx), static_cast<float>(cam.cy),
                                 static_cast<float>(cam.near_plane),
                                 static_cast<float>(-(cam.cx + 0.15 * w) / cam.fx),
@@ -159,8 +160,8 @@ TEST(gaussian_fused_projection_matches_float64_reference) {
   const auto p = scene.positions.detach().contiguous(), q = scene.rotations.detach().contiguous(),
              s = scene.scales.detach().contiguous();
   const auto w2c = cam.world_to_camera.to(dev).slice(0, 0, 3).contiguous();
-  auto out = at::empty({p.size(0), detail::kProjectColumns}, p.options());
-  detail::project_forward_cuda(p, q, s, w2c, k, out);
+  auto out = at::empty({p.size(0), gd::kProjectColumns}, p.options());
+  gd::project_forward_cuda(p, q, s, w2c, k, out);
 
   // float64 reference with autograd; parameters cast to float first, as the kernel sees them.
   auto p64 = p.to(at::kDouble).requires_grad_(true), q64 = q.to(at::kDouble).requires_grad_(true),
@@ -170,12 +171,12 @@ TEST(gaussian_fused_projection_matches_float64_reference) {
   check_close(out.slice(1, 6, 10), ref.detach().slice(1, 6, 10), 1e-4, 1e-6, "columns 6-9");
 
   torch::manual_seed(3);
-  auto g = torch::randn({p.size(0), detail::kProjectColumns}, p.options());
+  auto g = torch::randn({p.size(0), gd::kProjectColumns}, p.options());
   g.slice(1, 6, 10).zero_(); // only the first 6 columns are differentiable outputs
   // Scale the conic gradients like the rasterizer's (conics are ~1e-2..1e2).
   (ref * g.to(at::kDouble)).sum().backward();
   auto gp = at::empty_like(p), gq = at::empty_like(q), gs = at::empty_like(s);
-  detail::project_backward_cuda(p, q, s, w2c, k, g, gp, gq, gs);
+  gd::project_backward_cuda(p, q, s, w2c, k, g, gp, gq, gs);
   // Exclude the near-degenerate quaternions from the rotation check: their gradient scales
   // with 1/|q| ~ 1e7 and float32 cannot match it closely; they are checked to be finite.
   const int64_t n = p.size(0);
