@@ -3,6 +3,7 @@
 //                          [--modes center,volume,overlap] [--shift 0] [--interp 20000]
 //                          [--conv none|cpu|cuda] [--cout 16] [--dtype f32|f64]
 //                          [--region 16] [--phases cold,warm] [--drop-empty 0|1] [--group-mb M]
+//                          [--batch B --samples S --epochs E --part-reuse-mb M]
 // Workload: half the points uniform in [0,256)^3, half in [0,16)^3; voxelized at level 0 and
 // the region [0,R)^3 refined to `depth`, R = --region (16 = the adaptive_bench workload).
 // --phases picks which kernel-map timings run (cold, warm or both).
@@ -20,6 +21,15 @@
 //  conv_<mode>_fwdbwd_ms  : forward + backward (features and weight), synchronized
 //  conv_<mode>_cuda_ms    : forward time between CUDA events (cuda only)
 //  cuda_max_alloc_mb / cuda_max_reserved_mb : caching-allocator peaks over the conv runs
+// With --batch B: training-style batches instead. S samples (each --n points on a random
+// ellipsoid surface spanning 4 level-0 cells, the half x < 2 cells refined to --depth) are
+// shuffled every epoch (seed 0) and placed side by side along x, 6 level-0 cells apart, B per
+// batch; every batch is a new topology. The CenterSampled 3^3 map (--modes, first entry) of each
+// batch and of the batch pooled to every coarser level is built and timed:
+//  kmap_batch_first_epoch_ms : per batch, epoch 1 (all samples new)
+//  kmap_batch_later_epochs_ms: per batch, epochs 2..E
+//  part_hits / part_misses / part_store_mb : KernelMapCache part reuse counters at the end
+// --part-reuse-mb M sets KernelMapCache::set_part_reuse_bytes (0 = off, the default).
 // Always: peak_working_set_mb (process peak, Windows) at exit.
 #include <algorithm>
 #include <chrono>
@@ -67,6 +77,10 @@ struct Args {
     double region = 16.0;
     std::string phases = "cold,warm";
     double group_mb = -1.0;  // < 0: library default (CUDA apply_map group budget, 0 = one group)
+    int64_t batch = 0;       // > 0: training-style batches (run_batches)
+    int64_t samples = 64;
+    int epochs = 3;
+    double part_reuse_mb = 0.0;
 };
 
 Args parse(int argc, char** argv) {
@@ -88,6 +102,10 @@ Args parse(int argc, char** argv) {
         else if (k == "--phases") a.phases = v;
         else if (k == "--drop-empty") a.drop_empty = std::atoi(v.c_str()) != 0;
         else if (k == "--group-mb") a.group_mb = std::atof(v.c_str());
+        else if (k == "--batch") a.batch = std::atoll(v.c_str());
+        else if (k == "--samples") a.samples = std::atoll(v.c_str());
+        else if (k == "--epochs") a.epochs = std::atoi(v.c_str());
+        else if (k == "--part-reuse-mb") a.part_reuse_mb = std::atof(v.c_str());
         else {
             std::cerr << "unknown argument " << k << "\n";
             std::exit(2);
@@ -235,10 +253,90 @@ void print_peak_ws() {
 #endif
 }
 
+int run_batches(const Args& a) {
+    AdaptiveVoxelConfig cfg;
+    cfg.base_voxel_size = {1.0, 1.0, 1.0};
+    cfg.max_depth = a.depth;
+    AdaptiveKernelConfig kc;
+    if (!parse_mode(a.modes.substr(0, a.modes.find(',')), kc)) {
+        std::cerr << "unknown mode " << a.modes << std::endl;
+        return 2;
+    }
+    std::vector<at::Tensor> coords, levels;
+    int64_t leaves = 0;
+    for (int64_t s = 0; s < a.samples; ++s) {
+        torch::manual_seed(100 + s);
+        auto dir = torch::randn({a.n, 3}, torch::kFloat64);
+        dir = dir / dir.norm(2, 1, true);
+        auto radii = torch::rand({1, 3}, torch::kFloat64) * 1.2 + 0.6; // within [0, 4) cells
+        auto pts = dir * radii + 2.0;
+        auto t = AdaptiveSparseTensor::from_points(pts, torch::ones({a.n, 1}, torch::kFloat64), cfg);
+        t.refine(AxisAlignedRegion{{0, 0, 0}, {2, 4, 4}}, a.depth);
+        coords.push_back(t.coordinates());
+        levels.push_back(t.levels());
+        leaves += t.size();
+    }
+    print("samples", static_cast<double>(a.samples));
+    print("batch", static_cast<double>(a.batch));
+    print("leaves_per_sample", static_cast<double>(leaves) / a.samples);
+    print("part_reuse_mb", a.part_reuse_mb);
+    auto& cache = KernelMapCache::instance();
+    cache.clear();
+    cache.set_part_reuse_bytes(static_cast<size_t>(a.part_reuse_mb * 1048576.0));
+    std::vector<double> first, later;
+    double pairs = 0;
+    std::vector<int64_t> order(static_cast<size_t>(a.samples));
+    for (int64_t i = 0; i < a.samples; ++i) order[i] = i;
+    torch::manual_seed(0);
+    for (int e = 0; e < a.epochs; ++e) {
+        auto perm = torch::randperm(a.samples, torch::kInt64);
+        for (int64_t i = 0; i < a.samples; ++i) order[i] = perm[i].item<int64_t>();
+        for (int64_t b0 = 0; b0 + a.batch <= a.samples; b0 += a.batch) {
+            std::vector<at::Tensor> cs, ls;
+            for (int64_t k = 0; k < a.batch; ++k) {
+                const int64_t s = order[b0 + k];
+                auto c = coords[s].clone();
+                c.select(1, 0).add_((torch::pow(2.0, levels[s].to(torch::kFloat64)) * (6.0 * k))
+                                        .to(torch::kInt64));
+                cs.push_back(c);
+                ls.push_back(levels[s]);
+            }
+            auto x = AdaptiveSparseTensor::from_voxels(
+                torch::cat(cs, 0), torch::cat(ls, 0),
+                torch::ones({torch::cat(ls, 0).size(0), 1}, torch::kFloat64), cfg);
+            // The batch and its pooled versions (untimed), like a small encoder.
+            std::vector<AdaptiveSparseTensor> stages{x};
+            for (int64_t l = static_cast<int64_t>(a.depth) - 1; l >= 0; --l)
+                stages.push_back(adaptive_pool(stages.back(), static_cast<uint32_t>(l), Reduction::Mean));
+            const auto t0 = Clock::now();
+            for (const auto& st : stages) {
+                const auto m = build_adaptive_kernel_map(st, kc);
+                if (e == 0 && b0 == 0) pairs += static_cast<double>(m.in_index.numel());
+            }
+            (e == 0 ? first : later).push_back(ms_since(t0));
+        }
+    }
+    print("pairs_first_batch", pairs);
+    print_stats("kmap_batch_first_epoch", first);
+    if (!later.empty()) print_stats("kmap_batch_later_epochs", later);
+    const auto st = cache.stats();
+    print("part_hits", static_cast<double>(st.part_hits));
+    print("part_misses", static_cast<double>(st.part_misses));
+    print("part_store_mb", static_cast<double>(st.part_bytes) / 1048576.0);
+    cache.set_part_reuse_bytes(0);
+    cache.clear();
+    print_peak_ws();
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     const Args a = parse(argc, argv);
+    if (a.batch > 0) {
+        std::cout << std::fixed << std::setprecision(3);
+        return run_batches(a);
+    }
     if (a.group_mb >= 0)
         minkowski::adaptive::detail::cuda_apply_map_group_bytes() =
             static_cast<int64_t>(a.group_mb * 1048576.0);

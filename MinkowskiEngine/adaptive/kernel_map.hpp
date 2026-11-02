@@ -86,12 +86,29 @@ AdaptiveKernelMap build_adaptive_kernel_map(const AdaptiveSparseTensor &input,
 
 // Cache keyed by (input topology id, kernel size, mode, output shift). A topology
 // change produces a new id, so stale maps are never returned.
+//
+// Part reuse (opt-in, set_part_reuse_bytes > 0; CenterSampled and VolumeWeighted only).
+// Training batches are usually built by placing samples side by side along the first axis,
+// which gives every batch a new topology and so a full map build, although each sample's
+// part of the map is the same every time it appears. With part reuse, a topology whose leaves
+// fall into groups separated along the first axis by at least (kernel_size - 1) / 2 empty
+// level-0 cells is split into those parts. No tap can reach from one part into another, so
+// the map is the union of the parts' maps. Each part is matched by content (its leaf keys,
+// translated by whole level-0 cells, plus D, max_depth, base voxel size and the kernel
+// config) against maps kept from earlier batches; the batch map is then put together from
+// them instead of searched again. The result is identical to a full build, pair for pair:
+// taps resolve with integer cell arithmetic, so a translated part resolves the same leaves.
+// Parts seen for the first time are built and kept (least recently used ones are dropped
+// beyond the byte budget).
 class KernelMapCache {
 public:
   struct Stats {
     size_t hits = 0;
     size_t misses = 0;
     size_t entries = 0;
+    size_t part_hits = 0;   // parts whose map came from the part store
+    size_t part_misses = 0; // parts that had to be built
+    size_t part_bytes = 0;  // host bytes held by the part store
   };
 
   static KernelMapCache &instance();
@@ -102,6 +119,8 @@ public:
   void clear();
   Stats stats() const;
   void set_capacity(size_t max_entries);
+  // Byte budget of the part store; 0 (the default) turns part reuse off and frees the store.
+  void set_part_reuse_bytes(size_t max_bytes);
 
 private:
   KernelMapCache();
