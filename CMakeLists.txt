@@ -635,6 +635,36 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
     add_test(NAME gaussian_tests COMMAND gaussian_tests)
 endif()
 
+# ============================================================
+# Memory-growth (leak) tests: repeated fwd+bwd of sparse conv, adaptive
+# conv/interp/pool and Gaussian rendering; see tests/memory/.
+# Sanitizer runs: tests/run_sanitizers.ps1 (compute-sanitizer, ASan).
+# ============================================================
+
+if(MINK_BUILD_TESTS AND MINK_BUILD_ADAPTIVE_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
+    add_executable(memory_growth_tests
+        tests/memory/main.cpp
+        tests/memory/test_memory_growth.cpp
+    )
+    target_link_libraries(memory_growth_tests PRIVATE minkowski_cpp)
+    target_include_directories(memory_growth_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    )
+    if(MINK_TORCH_CXX_FLAGS)
+        target_compile_options(memory_growth_tests PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+        )
+    endif()
+    enable_testing()
+    add_test(NAME memory_growth_tests COMMAND memory_growth_tests)
+    set_tests_properties(memory_growth_tests PROPERTIES LABELS "memory")
+endif()
+
 # Windows resolves DLLs next to the executable, so without this the binaries
 # exit silently (0xC0000135) unless LibTorch's lib directory is on PATH.
 option(MINK_COPY_TORCH_DLLS "Copy LibTorch DLLs next to the built executables (Windows)" ON)
