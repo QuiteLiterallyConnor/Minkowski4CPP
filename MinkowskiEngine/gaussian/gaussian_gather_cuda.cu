@@ -40,16 +40,22 @@ __global__ void scatter_kernel(int64_t m, const int64_t *ids, const float *grad,
     return;
   const int64_t dst = ids[i];
   const float *a = grad + 10 * i;
-  gmeans[dst * 2] = a[0];
-  gmeans[dst * 2 + 1] = a[1];
-  gproj[dst * 10 + 2] = a[2];
-  gproj[dst * 10 + 3] = a[3];
-  gproj[dst * 10 + 4] = a[4];
-  gopacity[dst] = a[5];
-  gproj[dst * 10 + 5] = a[6];
-  gcolors[dst * 3] = a[7];
-  gcolors[dst * 3 + 1] = a[8];
-  gcolors[dst * 3 + 2] = a[9];
+  if (gmeans) {
+    gmeans[dst * 2] = a[0];
+    gmeans[dst * 2 + 1] = a[1];
+  }
+  if (gproj) {
+    gproj[dst * 10 + 2] = a[2];
+    gproj[dst * 10 + 3] = a[3];
+    gproj[dst * 10 + 4] = a[4];
+    gproj[dst * 10 + 5] = a[6];
+  }
+  if (gopacity) gopacity[dst] = a[5];
+  if (gcolors) {
+    gcolors[dst * 3] = a[7];
+    gcolors[dst * 3 + 1] = a[8];
+    gcolors[dst * 3 + 2] = a[9];
+  }
 }
 
 constexpr int kThreads = 256;
@@ -79,8 +85,11 @@ void gather_attributes_backward_cuda(const at::Tensor &ids, const at::Tensor &gr
   const c10::cuda::CUDAGuard guard(grad.device());
   scatter_kernel<<<static_cast<unsigned>((m + kThreads - 1) / kThreads), kThreads, 0,
                    at::cuda::getCurrentCUDAStream()>>>(
-      m, ids.data_ptr<int64_t>(), grad.data_ptr<float>(), gmeans.data_ptr<float>(),
-      gproj.data_ptr<float>(), gopacity.data_ptr<float>(), gcolors.data_ptr<float>());
+      m, ids.data_ptr<int64_t>(), grad.data_ptr<float>(),
+      gmeans.defined() ? gmeans.data_ptr<float>() : nullptr,
+      gproj.defined() ? gproj.data_ptr<float>() : nullptr,
+      gopacity.defined() ? gopacity.data_ptr<float>() : nullptr,
+      gcolors.defined() ? gcolors.data_ptr<float>() : nullptr);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

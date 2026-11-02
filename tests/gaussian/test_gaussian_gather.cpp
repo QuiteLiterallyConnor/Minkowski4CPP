@@ -125,6 +125,26 @@ TEST(gaussian_fused_gather_rejects_invalid_metadata) {
   // Index values are the internal caller's contract, not an unchecked public API.
 }
 
+TEST(gaussian_fused_gather_frozen_inputs_do_not_retain_unused_gradients) {
+  require_cuda();
+  const auto f = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
+  const int64_t n = 257;
+  const auto ids = torch::arange(n, f.dtype(torch::kLong)).flip({0}).slice(0, 0, n - 3);
+  for (size_t trainable = 0; trainable < 4; ++trainable) {
+    std::vector<at::Tensor> v{torch::zeros({n, 2}, f), torch::zeros({n, 10}, f),
+                              torch::zeros({n, 1}, f), torch::zeros({n, 3}, f)};
+    v[trainable].requires_grad_(true);
+    const auto weight = torch::arange(ids.numel() * 10, f).view({ids.numel(), 10});
+    const auto got = torch::autograd::grad({fused(v, ids)}, {v[trainable]}, {weight})[0];
+    const auto expected = torch::autograd::grad({reference(v, ids)}, {v[trainable]}, {weight})[0];
+    CHECK(got.cpu().equal(expected.cpu()));
+    std::cout << "         trainable attribute " << trainable << ": gradient storage "
+              << got.storage().nbytes() << " vs " << expected.storage().nbytes() << " bytes\n";
+    // A retained color/opacity gradient must not keep buffers for frozen geometry alive.
+    CHECK(got.storage().nbytes() <= static_cast<size_t>(got.numel() * got.element_size()));
+  }
+}
+
 TEST(gaussian_fused_gather_render_retains_means_gradient) {
   require_cuda();
   GatherToggle restore;

@@ -542,15 +542,24 @@ struct FusedGatherFunction : public torch::autograd::Function<FusedGatherFunctio
                                                  torch::autograd::variable_list grads) {
     const auto ids = ctx->get_saved_variables()[0];
     const auto n = ctx->saved_data["n"].toInt();
-    // One allocation and zero-fill, four disjoint contiguous views. Unselected
-    // rows and unused projection columns retain exactly zero gradients.
-    auto storage = at::zeros({n * 16}, grads[0].options());
-    auto gm = storage.slice(0, 0, n * 2).view({n, 2});
-    auto gp = storage.slice(0, n * 2, n * 12).view({n, 10});
-    auto go = storage.slice(0, n * 12, n * 13);
-    auto gc = storage.slice(0, n * 13, n * 16).view({n, 3});
+    // One allocation and zero-fill, disjoint contiguous views for requested
+    // gradients only. In color-only training, retaining grad_colors must not
+    // keep unused geometry gradients alive. Unselected rows stay exactly zero.
+    const bool nm = ctx->needs_input_grad(0), np = ctx->needs_input_grad(1);
+    const bool no = ctx->needs_input_grad(2), nc = ctx->needs_input_grad(3);
+    const int64_t columns = (nm ? 2 : 0) + (np ? 10 : 0) + (no ? 1 : 0) + (nc ? 3 : 0);
+    auto storage = at::zeros({n * columns}, grads[0].options());
+    int64_t offset = 0;
+    auto part = [&](bool needed, int64_t cols) -> at::Tensor {
+      if (!needed) return {};
+      auto t = storage.slice(0, offset, offset + n * cols).view({n, cols});
+      offset += n * cols;
+      return t;
+    };
+    auto gm = part(nm, 2), gp = part(np, 10), go = part(no, 1), gc = part(nc, 3);
     detail::gather_attributes_backward_cuda(ids, grads[0].contiguous(), gm, gp, go, gc);
-    return {gm, gp, go.reshape(ctx->saved_data["opacity_shape"].toIntVector()), gc, at::Tensor()};
+    return {gm, gp, go.defined() ? go.reshape(ctx->saved_data["opacity_shape"].toIntVector())
+                                 : at::Tensor(), gc, at::Tensor()};
   }
 };
 
