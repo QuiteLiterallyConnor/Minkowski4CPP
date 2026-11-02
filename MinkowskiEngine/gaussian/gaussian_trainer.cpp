@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
+
+#ifdef USE_CUDA
+#include "gaussian/gaussian_cuda.hpp"
+#endif
 
 namespace minkowski {
 namespace gaussian {
@@ -29,6 +34,41 @@ void check_image(const at::Tensor &t, const char *name) {
               " must have shape [H, W, 3]");
 }
 
+#ifdef USE_CUDA
+// One autograd node for the whole SSIM (see gaussian_ssim_cuda.cu); gradient for the prediction only.
+struct FusedSsimFunction : public torch::autograd::Function<FusedSsimFunction> {
+  static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &prediction,
+                            const at::Tensor &target, const std::vector<double> &taps) {
+    const auto x = prediction.contiguous(), y = target.contiguous();
+    const int64_t h = x.size(0), w = x.size(1);
+    auto map = at::empty({3, h, w}, x.options());
+    auto partials = at::empty({3, 3, h, w}, x.options());
+    detail::ssim_forward_cuda(x, y, window(taps), map, partials);
+    ctx->save_for_backward({x, y, partials});
+    ctx->saved_data["taps"] = taps;
+    return map.mean();
+  }
+
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext *ctx,
+                                                 torch::autograd::variable_list grads) {
+    const auto saved = ctx->get_saved_variables();
+    const auto &x = saved[0];
+    auto grad_x = at::empty_like(x);
+    detail::ssim_backward_cuda(x, saved[1], saved[2], window(ctx->saved_data["taps"].toDoubleVector()),
+                               grads[0], 1.0 / static_cast<double>(x.numel()), grad_x);
+    return {grad_x, at::Tensor(), at::Tensor()};
+  }
+
+  static detail::SsimWindow window(const std::vector<double> &taps) {
+    detail::SsimWindow win{};
+    win.radius = static_cast<int>(taps.size() / 2);
+    for (size_t i = 0; i < taps.size(); ++i)
+      win.w[i] = static_cast<float>(taps[i]);
+    return win;
+  }
+};
+#endif
+
 } // namespace
 
 at::Tensor l1_loss(const at::Tensor &prediction, const at::Tensor &target) {
@@ -44,6 +84,20 @@ at::Tensor ssim(const at::Tensor &prediction, const at::Tensor &target,
   TORCH_CHECK(prediction.sizes() == target.sizes(),
               "prediction and target must have the same shape");
   TORCH_CHECK(window > 0 && window % 2 == 1, "SSIM window must be odd");
+#ifdef USE_CUDA
+  if (prediction.is_cuda() && detail::cuda_fused_ssim() && window <= detail::kSsimMaxWindow &&
+      !target.requires_grad() && prediction.scalar_type() == at::kFloat &&
+      target.scalar_type() == at::kFloat && target.device() == prediction.device()) {
+    // The Gaussian taps of the LibTorch path below, computed on the host so the step never waits
+    // for the device.
+    const auto c = at::arange(window, at::kFloat) - static_cast<double>(window / 2);
+    auto host = at::exp(-(c * c) / (2.0 * sigma * sigma));
+    const auto taps = (host / host.sum()).to(at::kDouble);
+    return FusedSsimFunction::apply(
+        prediction, target,
+        std::vector<double>(taps.data_ptr<double>(), taps.data_ptr<double>() + window));
+  }
+#endif
   const auto options = prediction.options();
   auto coordinates =
       at::arange(window, options) - static_cast<double>(window / 2);
@@ -327,6 +381,15 @@ void GaussianTrainer::reset_opacity() {
   moment1_[3].zero_();
   moment2_[3].zero_();
 }
+
+#ifdef USE_CUDA
+namespace detail {
+bool &cuda_fused_ssim() {
+  static bool on = true;
+  return on;
+}
+} // namespace detail
+#endif
 
 } // namespace gaussian
 } // namespace minkowski
