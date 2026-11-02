@@ -53,6 +53,13 @@ public:
   // in/out indices on `device`, and the weights as `dtype` if `with_weight`.
   Arrays get(const AdaptiveKernelMap &map, const at::Device &device, at::ScalarType dtype,
              bool with_weight);
+  // Installs arrays built on `device` (part reuse composes batch maps there; `weight` is
+  // float64 or undefined for weight 1). The map's host arrays may then stay undefined until a
+  // caller asks for them (KernelMapCache::get_or_build with host_arrays).
+  void put(const at::Device &device, at::Tensor in_index, at::Tensor out_index, at::Tensor weight);
+  // The first slot's in/out indices and float64 weights (undefined if none); used to fill
+  // the host arrays of a map that was built on a device.
+  Arrays first_slot();
 
 private:
   struct Slot {
@@ -76,6 +83,19 @@ namespace detail {
 // a slot larger than the budget is its own group. Default 32 MiB; 0 = one group for all
 // slots. Process-wide tuning/test hook; set it before convolutions run, not concurrently.
 int64_t &cuda_apply_map_group_bytes();
+// Whether part reuse composes the batch maps of CUDA tensors on the device (default on): the
+// parts' pair arrays stay on the device, a new batch map uploads only a segment table and its
+// leaf numbering, and the map's host arrays are filled only on request. Off: host composition
+// and one upload of the composed map, as before. Process-wide tuning/test hook.
+bool &cuda_part_compose();
+#ifdef USE_CUDA
+// kernel_map_cuda.cu. `table` (int64, on the device) holds `segments` rows (dst, q0, n, part),
+// then per part (in ptr, out ptr, weight ptr or 0), per part (input base, output base), then
+// n_in input and n_out output leaf indices. Writes in/out_index (and *weight if given).
+void cuda_compose_parts(const at::Tensor &table, int64_t segments, int64_t parts,
+                        int64_t n_in, int64_t n_out, at::Tensor &in_index, at::Tensor &out_index,
+                        at::Tensor *weight);
+#endif
 } // namespace detail
 
 // Kernel slot of an offset in {-r..r}^D, r = (kernel_size-1)/2, first dimension slowest.
@@ -115,8 +135,10 @@ public:
   static KernelMapCache &instance();
   ~KernelMapCache();
 
+  // host_arrays = false (the convolutions) lets an entry whose map was composed on the input's
+  // device keep only its device arrays; true (default) always returns the host arrays.
   KernelMapEntry get_or_build(const AdaptiveSparseTensor &input,
-                              const AdaptiveKernelConfig &config);
+                              const AdaptiveKernelConfig &config, bool host_arrays = true);
   void clear();
   Stats stats() const;
   void set_capacity(size_t max_entries);

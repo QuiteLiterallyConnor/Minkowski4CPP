@@ -276,3 +276,90 @@ TEST(part_reuse_convolution_cuda_forward_backward_identical) {
     if (!torch::cuda::is_available()) return;
     check_conv(torch::kCUDA);
 }
+
+// Device composition (CUDA batches, detail::cuda_part_compose on): the batch map is written on
+// the device and its host arrays stay undefined until asked for. Both the device slot and the
+// host arrays filled on request equal a full build pair for pair; the off switch composes on
+// the host as before.
+TEST(part_reuse_device_compose_matches_full_build) {
+    if (!torch::cuda::is_available()) throw mink_test::Skip("CUDA not available");
+    const std::vector<std::vector<int>> batches{
+        {0, 1, 2}, {2, 3, 0, 4}, {4, 2, 3, 0, 1}, {1, 5, 0, 2, 3, 4, 0, 1}};
+    const auto cfg = make_config(3, 2.0, -3.0);
+    std::vector<AdaptiveSparseTensor> samples;
+    for (int s = 0; s < 6; ++s)
+        samples.push_back(make_sample(70 + s, 3, cfg));
+    const torch::Device cuda(torch::kCUDA);
+    for (bool device_compose : {true, false}) {
+        minkowski::adaptive::detail::cuda_part_compose() = device_compose;
+        for (auto mode : {AdaptiveConvMode::CenterSampled, AdaptiveConvMode::VolumeWeighted}) {
+            for (int K : {3, 5}) {
+                for (int shift : {0, -1}) {
+                    AdaptiveKernelConfig kc;
+                    kc.mode = mode;
+                    kc.kernel_size = K;
+                    kc.output_level_shift = shift;
+                    const int64_t stride = 4 + (K - 1) / 2 + 1;
+                    std::vector<AdaptiveSparseTensor> bt;
+                    std::vector<KernelMapEntry> expected;
+                    for (const auto &b : batches) {
+                        bt.push_back(make_batch(samples, b, stride, cfg).to(cuda));
+                        expected.push_back(full_build(bt.back(), kc));
+                    }
+                    PartReuse on(size_t(1) << 30);
+                    auto &cache = KernelMapCache::instance();
+                    int composed_on_device = 0;
+                    for (size_t i = 0; i < batches.size(); ++i) {
+                        const auto e = cache.get_or_build(bt[i], kc, /*host_arrays=*/false);
+                        if (!e.map.in_index.defined()) {
+                            ++composed_on_device;
+                            CHECK(e.map.kernel_offsets == expected[i].map.kernel_offsets);
+                            const auto a = e.device->get(e.map, cuda, torch::kFloat64, true);
+                            CHECK(a.in_index.is_cuda());
+                            CHECK(torch::equal(a.in_index.cpu(), expected[i].map.in_index));
+                            CHECK(torch::equal(a.out_index.cpu(), expected[i].map.out_index));
+                            CHECK(torch::equal(a.weight.cpu(), expected[i].map.weight));
+                            const auto f = e.device->get(e.map, cuda, torch::kFloat32, true);
+                            CHECK(torch::equal(f.weight.cpu(), expected[i].map.weight.to(torch::kFloat32)));
+                        }
+                        check_same_entry(cache.get_or_build(bt[i], kc), expected[i]);
+                    }
+                    // Batches 3 and 4 are composed when their new parts are few enough.
+                    if (device_compose)
+                        CHECK(composed_on_device >= 1);
+                    else
+                        CHECK_EQ(composed_on_device, 0);
+                }
+            }
+        }
+    }
+    minkowski::adaptive::detail::cuda_part_compose() = true;
+}
+
+// A map composed on the device and then used for the same topology on the CPU (no host arrays
+// yet) is copied from the device slot; the CPU convolution matches the one without part reuse.
+TEST(part_reuse_device_compose_then_cpu_convolution) {
+    if (!torch::cuda::is_available()) throw mink_test::Skip("CUDA not available");
+    const auto cfg = make_config(3, 2.0, 0.0);
+    std::vector<AdaptiveSparseTensor> samples;
+    for (int s = 0; s < 4; ++s)
+        samples.push_back(make_sample(90 + s, 3, cfg));
+    for (auto mode : {AdaptiveConvMode::CenterSampled, AdaptiveConvMode::VolumeWeighted}) {
+        AdaptiveKernelConfig kc;
+        kc.mode = mode;
+        const auto batch = make_batch(samples, {2, 0, 3, 1}, 6, cfg);
+        torch::manual_seed(3);
+        const auto w = torch::randn({27, 3, 5}, torch::kFloat64);
+        KernelMapCache::instance().clear();
+        const auto want = adaptive_convolution(batch, w, kc).features();
+        PartReuse on(size_t(1) << 30);
+        auto &cache = KernelMapCache::instance();
+        cache.get_or_build(make_batch(samples, {0, 1, 2, 3}, 6, cfg), kc); // store the parts
+        const auto on_cuda = batch.to(torch::kCUDA);
+        CHECK(!cache.get_or_build(on_cuda, kc, false).map.in_index.defined());
+        const auto got = adaptive_convolution(on_cuda.to(torch::kCPU), w, kc).features();
+        CHECK(torch::equal(got, want));
+        const auto y = adaptive_convolution(on_cuda, w.to(torch::kCUDA), kc).features().cpu();
+        CHECK_ALLCLOSE(y, want, 1e-12, 1e-12);
+    }
+}
