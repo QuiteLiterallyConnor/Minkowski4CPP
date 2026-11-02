@@ -670,6 +670,14 @@ if(MINK_BUILD_ML_EXPERIMENTS AND MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
             $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
         )
     endif()
+    add_executable(point_dataset_tests tests/tools/point_dataset_tests.cpp)
+    target_include_directories(point_dataset_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    add_test(NAME point_dataset_tests COMMAND point_dataset_tests)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME modelnet_preprocessing_tests
+            COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_prepare_modelnet10.py")
+    endif()
     # Smoke run: tiny dataset, one epoch per method (CPU unless CUDA is present).
     add_test(NAME ml_representations_smoke
         COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:ml_representations>

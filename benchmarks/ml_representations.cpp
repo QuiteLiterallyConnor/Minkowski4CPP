@@ -28,6 +28,7 @@
 #include "adaptive/ops.hpp"
 #include "gaussian/gaussian_adaptive.hpp"
 #include "third_party/json.hpp"
+#include "point_dataset.hpp"
 
 #include <torch/torch.h>
 
@@ -712,7 +713,11 @@ double median(std::vector<double> v) {
 } // namespace
 
 int main(int argc, char **argv) {
-  std::string method = "uniform", output = "ml_run.json", device_s = "cuda";
+  std::string method = "uniform", output = "ml_run.json", device_s = "cuda", dataset_dir;
+  bool data_options_explicit = false;
+  std::array<std::string, kClasses> class_names;
+  for (int c = 0; c < kClasses; ++c) class_names[c] = kClassNames[c];
+  json dataset_manifest = nullptr;
   int seed = 1, epochs = 12, train_per_class = 80, test_per_class = 40, npoints = 2048,
       batch_size = 16, profile_steps = 0;
   uint64_t data_seed = 2026;
@@ -728,16 +733,24 @@ int main(int argc, char **argv) {
       seed = std::stoi(v);
     else if (a == "--epochs")
       epochs = std::stoi(v);
-    else if (a == "--train-per-class")
+    else if (a == "--train-per-class") {
       train_per_class = std::stoi(v);
-    else if (a == "--test-per-class")
+      data_options_explicit = true;
+    }
+    else if (a == "--test-per-class") {
       test_per_class = std::stoi(v);
-    else if (a == "--points")
+      data_options_explicit = true;
+    }
+    else if (a == "--points") {
       npoints = std::stoi(v);
+      data_options_explicit = true;
+    }
     else if (a == "--batch")
       batch_size = std::stoi(v);
-    else if (a == "--data-seed")
+    else if (a == "--data-seed") {
       data_seed = std::stoull(v);
+      data_options_explicit = true;
+    }
     else if (a == "--density-threshold")
       density_threshold = std::stoll(v);
     else if (a == "--lr")
@@ -748,6 +761,8 @@ int main(int argc, char **argv) {
       output = v;
     else if (a == "--profile-steps")
       profile_steps = std::stoi(v);
+    else if (a == "--dataset-dir")
+      dataset_dir = v;
     else
       throw std::invalid_argument("unknown argument " + a);
   }
@@ -769,8 +784,30 @@ int main(int argc, char **argv) {
 
   // ---- data + representation (CPU, timed per sample)
   const double t_data0 = now_s();
-  auto train = make_split(train_per_class, data_seed, 0, npoints);
-  auto test = make_split(test_per_class, data_seed, 1, npoints);
+  std::vector<Sample> train, test;
+  if (dataset_dir.empty()) {
+    train = make_split(train_per_class, data_seed, 0, npoints);
+    test = make_split(test_per_class, data_seed, 1, npoints);
+  } else {
+    if (data_options_explicit)
+      throw std::invalid_argument("--dataset-dir owns point/sample counts and data seed; set them during preprocessing");
+    auto loaded = mink_bench::load_point_dataset(dataset_dir);
+    npoints = static_cast<int>(loaded.points_per_sample);
+    class_names = loaded.class_names;
+    dataset_manifest = loaded.manifest;
+    data_seed = dataset_manifest.value("preprocessing_seed", uint64_t(0));
+    auto convert_points = [&](std::vector<mink_bench::PointSample> &samples) {
+      std::vector<Sample> out;
+      out.reserve(samples.size());
+      for (auto &sample : samples) {
+        auto tensor = torch::from_blob(sample.points.data(), {npoints, 3}, torch::kFloat64).clone();
+        out.push_back({std::move(tensor), sample.label});
+      }
+      return out;
+    };
+    train = convert_points(loaded.train);
+    test = convert_points(loaded.test);
+  }
   const double data_s = now_s() - t_data0;
   auto convert = [&](const at::Tensor &pts) -> Rep {
     if (method == "uniform")
@@ -969,7 +1006,7 @@ int main(int argc, char **argv) {
     const double rc = tp + fn ? static_cast<double>(tp) / (tp + fn) : 0.0;
     const double f1 = pr + rc > 0 ? 2 * pr * rc / (pr + rc) : 0.0;
     p_sum += pr, r_sum += rc, f_sum += f1;
-    per_class.push_back({{"class", kClassNames[c]}, {"precision", pr}, {"recall", rc}, {"f1", f1}});
+    per_class.push_back({{"class", class_names[c]}, {"precision", pr}, {"recall", rc}, {"f1", f1}});
   }
 
   // ---- inference latency (batch 1, includes batch assembly from the precomputed
@@ -990,6 +1027,8 @@ int main(int argc, char **argv) {
   }
 
   json j = {{"method", method},
+            {"dataset", dataset_dir.empty() ? json("procedural_shapes10") : dataset_manifest.at("dataset")},
+            {"dataset_manifest", dataset_manifest},
             {"seed", seed},
             {"data_seed", data_seed},
             {"device", dev.is_cuda() ? "cuda" : "cpu"},
