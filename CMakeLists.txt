@@ -168,8 +168,12 @@ file(GLOB MINK_CPU_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/adaptive/*.cpp"
 )
 
-list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*test.*")
-list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*example.*")
+# Excludes test/example sources by FILE NAME. The globbed paths are absolute, so
+# the pattern must not match directories: a checkout under e.g. ~/latest/ or
+# C:/tests/ would otherwise drop every library source (checked by the
+# cmake_source_filter test).
+set(MINK_SOURCE_EXCLUDE_REGEX "/[^/]*(test|example)[^/]*$")
+list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX "${MINK_SOURCE_EXCLUDE_REGEX}")
 
 if(MINKOWSKI_ENABLE_GAUSSIAN)
     file(GLOB MINK_GAUSSIAN_CPU_SOURCES CONFIGURE_DEPENDS
@@ -216,8 +220,7 @@ if(NOT CPU_ONLY)
         "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/training/*.cu"
     )
 
-    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*test.*")
-    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*example.*")
+    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX "${MINK_SOURCE_EXCLUDE_REGEX}")
 
     if(MINKOWSKI_ENABLE_GAUSSIAN)
         file(GLOB MINK_GAUSSIAN_GPU_SOURCES CONFIGURE_DEPENDS
@@ -437,6 +440,10 @@ if(MINK_BUILD_TESTS)
 
     enable_testing()
     add_subdirectory(tests/utils)
+    add_test(NAME cmake_source_filter
+        COMMAND ${CMAKE_COMMAND}
+                "-DMINK_SOURCE_EXCLUDE_REGEX=${MINK_SOURCE_EXCLUDE_REGEX}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_source_filter.cmake")
 
     add_executable(train
         tests/train.cpp
