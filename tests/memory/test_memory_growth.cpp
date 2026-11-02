@@ -322,6 +322,7 @@ TEST(memory_growth_adaptive_pool_cpu) { adaptive_pool_case(false); }
 TEST(memory_growth_adaptive_pool_cuda) { adaptive_pool_case(true); }
 TEST(memory_growth_gaussian_render_cpu) { gaussian_render_case(false); }
 TEST(memory_growth_gaussian_render_cuda) { gaussian_render_case(true); }
-// 64 KiB per iteration on the CPU (>= 7 MiB over the default run), 1 KiB per iteration on CUDA.
-TEST(memory_growth_detects_planted_cpu_leak) { planted_leak_case(false, 16 * 1024); }
+// 128 KiB per iteration on the CPU (~14 MiB over the default run; 64 KiB measured only +5.0 MB of private bytes,
+// too close to the 4 MiB tolerance), 1 KiB per iteration on CUDA (+110 KiB measured vs 16 KiB tolerance).
+TEST(memory_growth_detects_planted_cpu_leak) { planted_leak_case(false, 32 * 1024); }
 TEST(memory_growth_detects_planted_cuda_leak) { planted_leak_case(true, 256); }
