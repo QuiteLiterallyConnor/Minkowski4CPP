@@ -2,7 +2,7 @@
 // Run: adaptive_kmap_bench [--n 20000] [--depth 4] [--channels 8] [--warmup 2] [--reps 5]
 //                          [--modes center,volume,overlap] [--shift 0] [--interp 20000]
 //                          [--conv none|cpu|cuda] [--cout 16] [--dtype f32|f64]
-//                          [--region 16] [--phases cold,warm]
+//                          [--region 16] [--phases cold,warm] [--drop-empty 0|1]
 // Workload: half the points uniform in [0,256)^3, half in [0,16)^3; voxelized at level 0 and
 // the region [0,R)^3 refined to `depth`, R = --region (16 = the adaptive_bench workload).
 // --phases picks which kernel-map timings run (cold, warm or both).
@@ -11,6 +11,9 @@
 //  kmap_<mode>_warm_ms : map build on a topology whose lazy indices already exist
 //  interp_multilinear_ms / interp_nearest_ms / interp_continuous_ms : interpolate() at --interp
 //    random points (continuous = InterpMode::ContinuousMultilinear)
+//  interp_<mode>_{zero,ancestor}_il_ms : the same queries with InterpFallback::Zero and
+//    ::CoarserAncestor, timed interleaved (alternating order every repetition)
+// --drop-empty 1 refines with drop_empty (uncovered space inside occupied level-0 cells).
 // With --conv cpu|cuda the kernel-map/interp parts are skipped and adaptive_convolution is
 // timed instead, with the kernel map already cached (the steady state of a training loop):
 //  conv_<mode>_first_ms   : first convolution after the map was built (uploads included)
@@ -26,6 +29,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "MinkowskiEngine/adaptive/adaptive.hpp"
@@ -57,6 +61,7 @@ struct Args {
     std::string modes = "center,volume,overlap";
     int shift = 0;
     int64_t interp = 20000;
+    bool drop_empty = false;
     std::string conv = "none";
     int64_t cout = 16;
     std::string dtype = "f32";
@@ -81,6 +86,7 @@ Args parse(int argc, char** argv) {
         else if (k == "--dtype") a.dtype = v;
         else if (k == "--region") a.region = std::atof(v.c_str());
         else if (k == "--phases") a.phases = v;
+        else if (k == "--drop-empty") a.drop_empty = std::atoi(v.c_str()) != 0;
         else {
             std::cerr << "unknown argument " << k << "\n";
             std::exit(2);
@@ -242,7 +248,8 @@ int main(int argc, char** argv) {
     cfg.min_voxel_size = {m, m, m};
     cfg.max_depth = a.depth;
     auto t = AdaptiveSparseTensor::from_points(pts, feats, cfg);
-    t.refine(AxisAlignedRegion{{0, 0, 0}, {a.region, a.region, a.region}}, a.depth);
+    t.refine(AxisAlignedRegion{{0, 0, 0}, {a.region, a.region, a.region}}, a.depth,
+             RefinePolicy::Replicate, a.drop_empty);
     const auto coords = t.coordinates();
     const auto levels = t.levels();
     const auto f = t.features();
@@ -296,6 +303,38 @@ int main(int argc, char** argv) {
         report("interp_nearest", a, [] {}, [&] { interpolate(t, q, InterpMode::Nearest); });
         report("interp_continuous", a, [] {},
                [&] { interpolate(t, q, InterpMode::ContinuousMultilinear); });
+#ifdef MINK_ADAPTIVE_HAS_INTERP_FALLBACK
+        {
+            auto ones = t.with_features(torch::ones({t.size(), 1}, torch::kFloat64));
+            const double covered =
+                (interpolate(ones, q, InterpMode::Nearest).squeeze(1) > 0.5).to(torch::kFloat64).mean().item<double>();
+            const double covered_fb = (interpolate(ones, q, InterpMode::Nearest, InterpFallback::CoarserAncestor)
+                                           .squeeze(1) > 0.5).to(torch::kFloat64).mean().item<double>();
+            print("interp_covered_fraction", covered);
+            print("interp_covered_fraction_ancestor", covered_fb);
+        }
+        for (const auto& [name, mode] : {std::pair<std::string, InterpMode>{"multilinear", InterpMode::Multilinear},
+                                         std::pair<std::string, InterpMode>{"nearest", InterpMode::Nearest}}) {
+            const auto run = [&](bool fb) {
+                interpolate(t, q, mode, fb ? InterpFallback::CoarserAncestor : InterpFallback::Zero);
+            };
+            for (int i = 0; i < a.warmup; ++i) {
+                run(false);
+                run(true);
+            }
+            std::vector<double> tz, tf;
+            for (int i = 0; i < a.reps; ++i) {
+                for (int k = 0; k < 2; ++k) {
+                    const bool fb = (k == 0) == (i % 2 == 1);
+                    auto t0 = Clock::now();
+                    run(fb);
+                    (fb ? tf : tz).push_back(ms_since(t0));
+                }
+            }
+            print_stats("interp_" + name + "_zero_il", tz);
+            print_stats("interp_" + name + "_ancestor_il", tf);
+        }
+#endif
     }
     print_peak_ws();
     return 0;
