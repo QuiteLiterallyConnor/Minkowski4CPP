@@ -28,6 +28,10 @@ void rasterize_backward_cuda(const at::Tensor &attrs, const at::Tensor &ids,
                              const at::Tensor &last_index, int64_t height,
                              int64_t width, at::Tensor &grad_attrs);
 
+// Distribute reduced backward attributes over ten lanes while preserving the
+// reduction order. Internal process-wide benchmark/test switch, default on.
+bool &cuda_raster_backward_parallel_atomics();
+
 // Fused projection of render_gaussians (gaussian_project_cuda.cu). Per Gaussian, out [N, 10]:
 // x2, y2 (pixel mean), conic a, b, c, camera-space z (differentiable), then a, b, c (2D covariance
 // with the low-pass term) and its determinant (for culling). world_to_camera is the [3, 4]

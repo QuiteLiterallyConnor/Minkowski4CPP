@@ -34,6 +34,7 @@ int main(int argc, char **argv) {
       else if (arg == "--warmup") warmup = std::stoi(next());
       else if (arg == "--iterations") iterations = std::stoi(next());
       else if (arg == "--pattern") pattern = next();
+      else if (arg == "--parallel-atomics") gd::cuda_raster_backward_parallel_atomics() = std::stoi(next()) != 0;
       else if (arg == "--output") output = next();
       else throw std::invalid_argument("unknown option: " + arg);
     }
