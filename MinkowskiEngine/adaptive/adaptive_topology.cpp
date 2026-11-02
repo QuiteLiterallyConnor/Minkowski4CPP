@@ -1,5 +1,6 @@
 #include "adaptive_topology.hpp"
 
+#include <array>
 #include <atomic>
 #include <exception>
 #include <mutex>
@@ -195,15 +196,45 @@ void run_parallel_blocks(int64_t n, int blocks,
   run_tasks(blocks, [&](int b) { f(b, n * b / blocks, n * (b + 1) / blocks); });
 }
 
+namespace {
+
+// If the keys of every level are already strictly increasing (e.g. per-sample sorted pieces
+// concatenated along the first axis, as a batch is built), a stable counting sort by level is
+// the whole sort: O(n) instead of O(n log n), and no device round trip. Keys are distinct, so
+// the result (keys and order) is the one the full sort produces. False (nothing changed) if
+// some level is out of order or repeats a key.
+bool sort_by_level_if_levels_sorted(std::vector<Key> &keys, std::vector<int64_t> &order) {
+  constexpr size_t kLevels = AdaptiveVoxelConfig::kMaxSupportedDepth + 1;
+  const int64_t n = static_cast<int64_t>(keys.size());
+  std::array<int64_t, kLevels> count{}, last;
+  last.fill(-1);
+  for (int64_t i = 0; i < n; ++i) {
+    const uint32_t l = keys[i].level;
+    if (l >= kLevels || (last[l] >= 0 && !key_less(keys[last[l]], keys[i])))
+      return false;
+    last[l] = i;
+    ++count[l];
+  }
+  std::array<int64_t, kLevels> pos{};
+  for (size_t l = 1; l < kLevels; ++l)
+    pos[l] = pos[l - 1] + count[l - 1];
+  order.resize(static_cast<size_t>(n));
+  for (int64_t i = 0; i < n; ++i)
+    order[static_cast<size_t>(pos[keys[i].level]++)] = i;
+  std::vector<Key> sorted(static_cast<size_t>(n));
+  for_blocks(n, [&](int64_t b, int64_t e) {
+    for (int64_t j = b; j < e; ++j)
+      sorted[j] = keys[order[j]];
+  });
+  keys.swap(sorted);
+  return true;
+}
+
+} // namespace
+
 void sort_keys(std::vector<Key> &keys, std::vector<int64_t> &order) {
   order.clear();
   const int64_t n = static_cast<int64_t>(keys.size());
-#ifdef USE_CUDA
-  if (n >= kMinDeviceKeys && cuda_topology_available()) {
-    cuda_sort_keys(keys, order);
-    return;
-  }
-#endif
   std::atomic<bool> sorted{true};
   for_blocks(n, [&](int64_t b, int64_t e) {
     // Each block also compares against the key just before it.
@@ -215,6 +246,14 @@ void sort_keys(std::vector<Key> &keys, std::vector<int64_t> &order) {
   });
   if (sorted.load())
     return;
+  if (sort_by_level_if_levels_sorted(keys, order))
+    return;
+#ifdef USE_CUDA
+  if (n >= kMinDeviceKeys && cuda_topology_available()) {
+    cuda_sort_keys(keys, order);
+    return;
+  }
+#endif
   std::vector<KeyIdx> items(static_cast<size_t>(n));
   for_blocks(n, [&](int64_t b, int64_t e) {
     for (int64_t i = b; i < e; ++i)
