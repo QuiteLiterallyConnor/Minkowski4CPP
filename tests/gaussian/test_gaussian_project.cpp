@@ -3,6 +3,7 @@
 // densification) with the fused path on and off, and the projection columns and gradients
 // against a float64 LibTorch reference of the same math, including clamped / degenerate cases.
 #include <cmath>
+#include <iostream>
 #include <initializer_list>
 #include <utility>
 #include <vector>
@@ -88,6 +89,9 @@ void check_close(const at::Tensor &a, const at::Tensor &b, double rtol, double a
   CHECK(a.defined() && b.defined());
   const double diff = (a.cpu().to(torch::kFloat64) - b.cpu().to(torch::kFloat64)).abs().max().item<double>();
   const double scale = b.cpu().to(torch::kFloat64).abs().max().item<double>();
+  std::cout << "         " << what << ": max abs diff " << diff << " (relative "
+            << (scale > 0 ? diff / scale : 0.0) << ")
+";
   if (!(diff <= rtol * scale + atol))
     FAIL_AT(what << ": max abs diff " << diff << " vs scale " << scale);
 }
