@@ -621,12 +621,19 @@ bool build_from_parts(const std::shared_ptr<const Topology> &in, const AdaptiveK
   out_split.first_x = in_split.first_x;
   out_split.assign(*e.out_topology);
   std::vector<std::shared_ptr<const PartMap>> built;
-  if (hits == 0) {
-    // Nothing to reuse: one full build, cut into the parts' maps for later batches.
+  // Building parts one by one costs a topology, lookup table and map per part, which only
+  // pays off while the new parts are a small share of the leaves; otherwise one full build,
+  // cut into the new parts' maps for later batches.
+  int64_t new_leaves = 0;
+  for (size_t p = 0; p < np; ++p)
+    if (!found[p])
+      new_leaves += static_cast<int64_t>(in_split.leaves[p].size());
+  if (hits == 0 || 4 * new_leaves > in->size()) {
     e.map = build_pairs(*e.out_topology, *in, kc);
     if (extract_parts(e.map, *in, *e.out_topology, in_split, out_split, probe))
-      for (auto &pm : probe)
-        built.push_back(std::make_shared<const PartMap>(std::move(pm)));
+      for (size_t p = 0; p < np; ++p)
+        if (!found[p])
+          built.push_back(std::make_shared<const PartMap>(std::move(probe[p])));
   } else {
     for (size_t p = 0; p < np; ++p) {
       if (!found[p]) {

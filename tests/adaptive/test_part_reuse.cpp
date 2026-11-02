@@ -87,21 +87,34 @@ void check_same_entry(const KernelMapEntry &a, const KernelMapEntry &b) {
 } // namespace
 
 // Exact equality against a full build for every reuse path: all parts new (cut from a full
-// build), some new (built alone, then composed), all stored (composed only).
+// build), many new (full build, new ones cut), all stored (composed only), few new (built
+// alone, then composed).
 TEST(part_reuse_matches_full_build_modes_shifts_kernels) {
+    const std::vector<std::vector<int>> batches{
+        {0, 1, 2}, {2, 3, 0, 4}, {4, 2, 3, 0, 1}, {1, 5, 0, 2, 3, 4, 0, 1}};
     for (int D : {1, 2, 3}) {
         const auto cfg = make_config(D, 2.0, -3.0);
         std::vector<AdaptiveSparseTensor> samples;
-        for (int s = 0; s < 5; ++s)
+        for (int s = 0; s < 6; ++s)
             samples.push_back(make_sample(10 + s, D, cfg));
-        // Samples of b2 equal to one in b1 (in 1-2 D the random samples can coincide).
-        size_t b2_hits = 0;
-        for (int i : {2, 3, 0, 4}) {
-            bool seen = false;
-            for (int j : {0, 1, 2})
-                seen = seen || (torch::equal(samples[i].coordinates(), samples[j].coordinates()) &&
-                                torch::equal(samples[i].levels(), samples[j].levels()));
-            b2_hits += seen;
+        // Expected hits per batch: samples equal (in content) to one of an earlier batch.
+        // In 1-2 D some random samples coincide, which correctly hits.
+        auto same = [&](int i, int j) {
+            return torch::equal(samples[i].coordinates(), samples[j].coordinates()) &&
+                   torch::equal(samples[i].levels(), samples[j].levels());
+        };
+        std::vector<size_t> expect_hits;
+        std::vector<int> seen;
+        for (const auto &b : batches) {
+            size_t h = 0;
+            for (int i : b)
+                for (int j : seen)
+                    if (same(i, j)) {
+                        ++h;
+                        break;
+                    }
+            expect_hits.push_back(h);
+            seen.insert(seen.end(), b.begin(), b.end());
         }
         for (auto mode : {AdaptiveConvMode::CenterSampled, AdaptiveConvMode::VolumeWeighted}) {
             for (int K : {1, 3, 5}) {
@@ -112,32 +125,27 @@ TEST(part_reuse_matches_full_build_modes_shifts_kernels) {
                     kc.output_level_shift = shift;
                     const int64_t stride = 4 + (K - 1) / 2 + 1; // span 4 cells, gap r + 1
                     // full_build clears the store, so build each batch's expectation first.
-                    auto b1 = make_batch(samples, {0, 1, 2}, stride, cfg);
-                    auto b2 = make_batch(samples, {2, 3, 0, 4}, stride, cfg);
-                    auto b3 = make_batch(samples, {4, 2, 3, 0, 1}, stride, cfg);
-                    const auto e1 = full_build(b1, kc), e2 = full_build(b2, kc),
-                               e3 = full_build(b3, kc);
+                    std::vector<AdaptiveSparseTensor> bt;
+                    std::vector<KernelMapEntry> expected;
+                    for (const auto &b : batches) {
+                        bt.push_back(make_batch(samples, b, stride, cfg));
+                        expected.push_back(full_build(bt.back(), kc));
+                    }
                     PartReuse on(size_t(1) << 30);
                     auto &cache = KernelMapCache::instance();
-                    check_same_entry(cache.get_or_build(b1, kc), e1); // 3 misses: cut
-                    if (K == 1) { // radius 0: every occupied level-0 cell is a part of its own
-                        check_same_entry(cache.get_or_build(b2, kc), e2);
-                        check_same_entry(cache.get_or_build(b3, kc), e3);
-                        CHECK(cache.stats().part_hits > 0);
-                        continue;
+                    size_t hits = 0, lookups = 0;
+                    for (size_t i = 0; i < batches.size(); ++i) {
+                        check_same_entry(cache.get_or_build(bt[i], kc), expected[i]);
+                        if (K == 1) // radius 0: every occupied level-0 cell is a part of its own
+                            continue;
+                        hits += expect_hits[i];
+                        lookups += batches[i].size();
+                        const auto st = cache.stats();
+                        CHECK_EQ(st.part_hits, hits);
+                        CHECK_EQ(st.part_misses, lookups - hits);
                     }
-                    auto st = cache.stats();
-                    CHECK_EQ(st.part_hits, size_t(0));
-                    CHECK_EQ(st.part_misses, size_t(3));
-                    check_same_entry(cache.get_or_build(b2, kc), e2); // hits, rest built alone
-                    st = cache.stats();
-                    CHECK_EQ(st.part_hits, b2_hits);
-                    CHECK_EQ(st.part_misses, size_t(7) - b2_hits);
-                    check_same_entry(cache.get_or_build(b3, kc), e3); // all 5 stored
-                    st = cache.stats();
-                    CHECK_EQ(st.part_hits, b2_hits + 5);
-                    CHECK_EQ(st.part_misses, size_t(7) - b2_hits);
-                    CHECK(st.part_bytes > 0);
+                    CHECK(cache.stats().part_hits > 0);
+                    CHECK(cache.stats().part_bytes > 0);
                 }
             }
         }
