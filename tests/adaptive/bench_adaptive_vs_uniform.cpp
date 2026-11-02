@@ -549,6 +549,26 @@ json accuracy(const Built &b, const Dataset &d, const Args &a) {
     j["ml_queries"] = mq;
     j["rmse_multilinear_all"] = std::sqrt((ml - ref.slice(0, 0, mq)).pow(2).mean().item<double>());
   }
+#ifdef MINK_ADAPTIVE_HAS_INTERP_FALLBACK
+  // Same queries with InterpFallback::CoarserAncestor: uncovered points take the mean of their
+  // finest occupied ancestor cell instead of 0 (matters for drop_empty).
+  {
+    const auto fb = ad::InterpFallback::CoarserAncestor;
+    t0 = Clock::now();
+    auto pred_fb = ad::interpolate(*b.t, q, ad::InterpMode::Nearest, fb);
+    j["interp_nearest_fallback_ms"] = ms_since(t0);
+    auto ones = b.t->with_features(torch::ones({b.t->size(), 1}, torch::kFloat64));
+    auto assigned = ad::interpolate(ones, q, ad::InterpMode::Nearest, fb).squeeze(1) > 0.5;
+    j["coverage_fallback"] = assigned.to(torch::kFloat64).mean().item<double>();
+    j["nrmse_nearest_all_fallback"] =
+        std::sqrt((pred_fb - ref).pow(2).mean().item<double>()) / ref_std;
+    if (mq > 0) {
+      auto ml = ad::interpolate(*b.t, q.slice(0, 0, mq), ad::InterpMode::Multilinear, fb);
+      j["rmse_multilinear_all_fallback"] =
+          std::sqrt((ml - ref.slice(0, 0, mq)).pow(2).mean().item<double>());
+    }
+  }
+#endif
   return j;
 }
 
@@ -733,10 +753,35 @@ void sphere_analysis(const Args &a) {
     return std::pair<double, double>{100.0 * frac * cube / exact, 100.0 * se * cube / exact};
   };
 
+#ifdef MINK_SPHERE_HAS_ERROR_METRIC
+  const std::vector<std::pair<std::string, ad::SphereErrorMetric>> metrics = {
+      {"signed_volume", ad::SphereErrorMetric::SignedVolume},
+      {"geometric", ad::SphereErrorMetric::Geometric}};
+#else
+  const std::vector<std::pair<std::string, int>> metrics = {{"signed_volume", 0}};
+#endif
+  for (const auto &[metric_name, metric] : metrics)
   for (double target : {90.0, 95.0, 98.0, 99.0, 99.5, 99.9}) {
     double achieved = 0;
     auto t0 = Clock::now();
-    auto s = ad::voxelize_sphere(radius, target, {0, 0, 0}, 10'000'000, 10, &achieved);
+    std::optional<ad::AdaptiveSparseTensor> built;
+    try {
+#ifdef MINK_SPHERE_HAS_ERROR_METRIC
+      built = ad::voxelize_sphere(radius, target, {0, 0, 0}, 10'000'000, 10, &achieved, metric);
+#else
+      (void)metric;
+      built = ad::voxelize_sphere(radius, target, {0, 0, 0}, 10'000'000, 10, &achieved);
+#endif
+    } catch (const std::runtime_error &e) {
+      json j;
+      j["kind"] = "sphere_adaptive";
+      j["metric"] = metric_name;
+      j["target_accuracy"] = target;
+      j["error"] = e.what();
+      emit(j, a);
+      continue;
+    }
+    const auto &s = *built;
     const double ms = ms_since(t0);
     const double est = ad::sphere_volume_estimate(s);
     auto occ = ad::interpolate(s, pts, ad::InterpMode::Nearest).squeeze(1) > 0.5;
@@ -756,6 +801,7 @@ void sphere_analysis(const Args &a) {
         coarsest = l;
     json j;
     j["kind"] = "sphere_adaptive";
+    j["metric"] = metric_name;
     j["target_accuracy"] = target;
     j["reported_accuracy"] = achieved;
     j["signed_volume_error_pct"] = 100.0 * (est - exact) / exact;
