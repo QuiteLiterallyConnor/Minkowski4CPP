@@ -477,6 +477,9 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_sphere.cpp
         tests/adaptive/test_overlap_descent.cpp
         tests/adaptive/test_parallel_kmap.cpp
+        tests/adaptive/test_device_kmap.cpp
+        tests/adaptive/test_integer_taps.cpp
+        tests/adaptive/test_part_reuse.cpp
         tests/adaptive/test_drop_empty.cpp
         tests/adaptive/test_interp_fallback.cpp
         tests/adaptive/test_coverage.cpp

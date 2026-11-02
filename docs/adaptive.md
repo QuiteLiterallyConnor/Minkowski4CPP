@@ -117,6 +117,13 @@ with the first axis varying slowest.
 | `VolumeWeighted` | Volume-aware contribution |
 | `OverlapWeighted` | Weight by overlap volume / output volume |
 
+`CenterSampled` and `VolumeWeighted` resolve each tap on the integer grid: the tap is the
+centre of the neighbouring output-level cell, and where that cell is split into finer leaves
+it reads the leaf whose lower corner the centre is (cells are half-open). The map therefore
+depends only on the leaf keys, not on where the grid sits in space, also for voxel sizes and
+origins that are not binary fractions (earlier versions located the tap as a floating-point
+point there, and rounding decided between the leaves touching it).
+
 Coarsen output resolution with `output_level_shift = -1`:
 
 ```cpp
@@ -128,6 +135,16 @@ auto restored = adaptive_convolution_transpose(coarse, up_weight, down, t);
 ```
 
 Transpose convolution uses the reference tensor's leaves.
+
+Kernel maps are built on the host once per (topology, kernel size, mode, shift) and cached;
+their index and weight arrays are uploaded once per device and dtype and reused by later
+calls. `KernelMapCache::instance().clear()` releases both. On CUDA the scatter-add uses
+`index_add_`, whose floating-point atomics make results vary in the last bits between runs;
+call `torch::globalContext().setDeterministicAlgorithms(true, false)` for bit-reproducible
+outputs (slower), as for any PyTorch scatter.
+On CUDA, consecutive kernel slots are processed in groups whose temporaries fit 32 MiB
+(`detail::cuda_apply_map_group_bytes()`, 0 = one group), so peak memory does not grow with the
+whole kernel map.
 `output_level_shift > 0` is currently unsupported.
 
 ## Pooling, interpolation, and resampling
@@ -199,6 +216,25 @@ topology pipeline.
 Kernel maps are cached per topology. Inspect
 `KernelMapCache::instance().stats()` and use `.clear()` when intentionally
 resetting the cache.
+
+Training batches usually put each sample next to the others along the first axis,
+so every batch is a new topology and its kernel maps are built from scratch, although
+each sample's share of them is the same every epoch. Part reuse keeps those shares:
+
+```cpp
+KernelMapCache::instance().set_part_reuse_bytes(size_t(512) << 20); // 0 = off (default)
+```
+
+A topology whose leaves form groups separated along the first axis by at least
+`(kernel_size - 1) / 2` empty level-0 cells is split into those groups (a topology that does
+not split is one group, so single samples seen again, such as a validation set, are reused too); each group is
+matched by content (its keys moved to start at level-0 x 0) against the groups of earlier
+batches, and the batch map is assembled from their maps. The result equals a full
+build exactly. It applies to `CenterSampled` and `VolumeWeighted`; stored groups are
+dropped least recently used first beyond the byte budget. `stats()` reports
+`part_hits`, `part_misses` and `part_bytes`. Pooled batches (`adaptive_pool`) split the
+same way, so every layer of an encoder benefits. Moving samples by whole level-0 cells
+keeps them identical; any other offset makes them new content.
 
 ## Limits and measurements
 
