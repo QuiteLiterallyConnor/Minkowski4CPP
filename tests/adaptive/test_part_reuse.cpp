@@ -211,8 +211,17 @@ TEST(part_reuse_budget_and_eviction) {
     CHECK_EQ(cache.stats().part_bytes, size_t(0));
 }
 
-// Convolution outputs and gradients with a composed map equal those with a full build.
+// Convolution outputs and gradients with a composed map equal those with a full build. On CUDA
+// with deterministic algorithms: the scatter-adds otherwise use float atomics, whose order (and
+// so the last bits) varies between any two runs.
 void check_conv(torch::Device dev) {
+    auto &ctx = at::globalContext();
+    const bool was = ctx.deterministicAlgorithms(), warn = ctx.deterministicAlgorithmsWarnOnly();
+    if (dev.is_cuda()) ctx.setDeterministicAlgorithms(true, false);
+    struct Restore {
+        bool was, warn;
+        ~Restore() { at::globalContext().setDeterministicAlgorithms(was, warn); }
+    } restore{was, warn};
     const auto cfg = make_config(3, 2.0, 0.0);
     std::vector<AdaptiveSparseTensor> samples;
     for (int s = 0; s < 4; ++s)
