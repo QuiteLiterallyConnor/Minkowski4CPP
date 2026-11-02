@@ -4,6 +4,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace minkowski {
 namespace adaptive {
@@ -552,6 +554,11 @@ AdaptiveSparseTensor AdaptiveSparseTensor::resample_to(const AdaptiveSparseTenso
   const Topology &r = *reference.topology_;
   if (s.D != r.D)
     throw std::invalid_argument("resample_to: dimension mismatch");
+  // Keys only describe the same cells when both grids share origin and base size.
+  // max_depth may differ: it only bounds how deep each tree can go.
+  if (s.origin != r.origin || s.base != r.base)
+    throw std::invalid_argument(
+        "resample_to: tensors use different grids (origin or base_voxel_size differ)");
   std::vector<int64_t> src, dst;
   for (int64_t j = 0; j < r.size(); ++j) {
     const Key &rk = r.keys[j];
@@ -577,7 +584,32 @@ AdaptiveSparseTensor AdaptiveSparseTensor::resample_to(const AdaptiveSparseTenso
       }
     }
   }
-  auto feats = remap_features(features_, src, dst, nullptr, r.size(), reduction);
+  if (reduction != Reduction::Mean) {
+    auto feats = remap_features(features_, src, dst, nullptr, r.size(), reduction);
+    return from_topology(reference.topology_, feats);
+  }
+  // Mean must agree with coarsen(): average the occupied children level by level, so a
+  // finer leaf's weight is the product of 1 / (occupied children) over its ancestors below
+  // the reference leaf (the volume-weighted mean when every child is occupied).
+  std::unordered_map<Key, int64_t, detail::KeyHash> occupied;
+  {
+    std::unordered_set<Key, detail::KeyHash> nodes;
+    for (size_t m = 0; m < src.size(); ++m) {
+      const uint32_t top = r.keys[dst[m]].level;
+      for (Key k = s.keys[src[m]]; k.level > top; k = detail::parent_key(k))
+        if (!nodes.insert(k).second)
+          break; // its ancestors were inserted with it
+    }
+    for (const Key &n : nodes)
+      ++occupied[detail::parent_key(n)];
+  }
+  std::vector<double> scale(src.size(), 1.0);
+  for (size_t m = 0; m < src.size(); ++m) {
+    const uint32_t top = r.keys[dst[m]].level;
+    for (Key k = s.keys[src[m]]; k.level > top; k = detail::parent_key(k))
+      scale[m] /= static_cast<double>(occupied[detail::parent_key(k)]);
+  }
+  auto feats = remap_features(features_, src, dst, &scale, r.size(), Reduction::Sum);
   return from_topology(reference.topology_, feats);
 }
 

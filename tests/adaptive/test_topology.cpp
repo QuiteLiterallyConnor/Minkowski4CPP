@@ -1,4 +1,6 @@
 // Topology tests: refinement, coarsening, overlap invariants, feature policies, cache invalidation.
+#include <array>
+#include <functional>
 #include <random>
 #include <vector>
 
@@ -294,4 +296,131 @@ TEST(topology_addition_requires_matching_topology) {
 TEST(topology_counts_by_level_has_depth_plus_one_entries) {
     auto t = make_row(2, 4);
     CHECK_EQ(t.counts_by_level().size(), size_t(5));
+}
+
+namespace {
+
+AdaptiveSparseTensor from_keys(const std::vector<std::array<int64_t, 4>>& keys,
+                               const std::vector<double>& values, AdaptiveVoxelConfig cfg) {
+    const int64_t n = static_cast<int64_t>(keys.size());
+    auto c = torch::zeros({n, 3}, torch::kInt64);
+    auto l = torch::zeros({n}, torch::kInt32);
+    auto f = torch::zeros({n, 1}, torch::kFloat64);
+    for (int64_t i = 0; i < n; ++i) {
+        for (int d = 0; d < 3; ++d) c[i][d] = keys[i][d];
+        l[i] = int(keys[i][3]);
+        f[i][0] = values[i];
+    }
+    return AdaptiveSparseTensor::from_voxels(c, l, f, cfg);
+}
+
+// Random non-overlapping leaves below a 3x2x2 block of level-0 cells: each cell is a leaf, empty,
+// or split into its children (recursively up to max_depth). Empty cells make occupancy partial.
+AdaptiveSparseTensor random_tree(uint32_t depth, uint32_t seed, int64_t channels) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> u(0.0, 1.0);
+    std::vector<std::array<int64_t, 4>> keys;
+    std::function<void(std::array<int64_t, 3>, uint32_t)> visit = [&](std::array<int64_t, 3> c,
+                                                                       uint32_t level) {
+        const double r = u(rng);
+        if (level > 0 && r < 0.2) return;  // empty
+        if (level == depth || r < 0.5) {
+            keys.push_back({c[0], c[1], c[2], int64_t(level)});
+            return;
+        }
+        for (int i = 0; i < 8; ++i)
+            visit({2 * c[0] + (i & 1), 2 * c[1] + ((i >> 1) & 1), 2 * c[2] + ((i >> 2) & 1)},
+                  level + 1);
+    };
+    for (int64_t x = 0; x < 3; ++x)
+        for (int64_t y = 0; y < 2; ++y)
+            for (int64_t z = 0; z < 2; ++z) visit({x, y, z}, 0);
+    const int64_t n = static_cast<int64_t>(keys.size());
+    auto c = torch::zeros({n, 3}, torch::kInt64);
+    auto l = torch::zeros({n}, torch::kInt32);
+    for (int64_t i = 0; i < n; ++i) {
+        for (int d = 0; d < 3; ++d) c[i][d] = keys[i][d];
+        l[i] = int(keys[i][3]);
+    }
+    torch::manual_seed(seed);
+    return AdaptiveSparseTensor::from_voxels(c, l, torch::randn({n, channels}, torch::kFloat64),
+                                             make_config(depth));
+}
+
+}  // namespace
+
+TEST(topology_resample_to_rejects_a_different_grid) {
+    auto a = make_row(3);
+    auto shifted = make_config();
+    shifted.origin = {1.0, 0.0, 0.0};
+    auto b = from_keys({{0, 0, 0, 0}}, {1.0}, shifted);
+    CHECK_THROWS(b.resample_to(a));
+    CHECK_THROWS(a.resample_to(b));
+
+    auto finer_base = make_config(3, 4.0);
+    CHECK_THROWS(from_keys({{0, 0, 0, 0}}, {1.0}, finer_base).resample_to(a));
+
+    // Same grid: accepted.
+    CHECK_EQ(from_keys({{0, 0, 0, 1}}, {1.0}, make_config()).resample_to(a).size(), a.size());
+
+    // A different max_depth on the same grid is the same set of cells: accepted, and a
+    // level-4 leaf (deeper than a's max_depth) reduces into the level-0 leaf containing it.
+    auto deep = from_keys({{0, 0, 0, 4}, {16, 0, 0, 0}}, {2.0, 5.0}, make_config(4));
+    auto onto_a = deep.resample_to(a, Reduction::Sum);
+    CHECK_NEAR(onto_a.features()[a.index_of({0, 0, 0}, 0)][0].item<double>(), 2.0, 0.0);
+    CHECK_NEAR(onto_a.features()[a.index_of({1, 0, 0}, 0)][0].item<double>(), 0.0, 0.0);
+    auto back = a.resample_to(deep, Reduction::Mean);
+    CHECK_NEAR(back.features()[deep.index_of({0, 0, 0}, 4)][0].item<double>(), 1.0, 0.0);
+    CHECK_NEAR(back.features()[deep.index_of({16, 0, 0}, 0)][0].item<double>(), 0.0, 0.0);
+}
+
+TEST(topology_resample_to_mean_matches_coarsen_on_mixed_depths) {
+    // Inside the level-0 cell: one level-1 leaf with value 0 and the 8 level-2 children of the
+    // level-1 cell next to it, value 8. coarsen() averages occupied children per level: 4.
+    std::vector<std::array<int64_t, 4>> keys = {{0, 0, 0, 1}};
+    std::vector<double> values = {0.0};
+    for (int i = 0; i < 8; ++i) {
+        keys.push_back({2 + (i & 1), (i >> 1) & 1, (i >> 2) & 1, 2});
+        values.push_back(8.0);
+    }
+    auto t = from_keys(keys, values, make_config());
+    auto ref = from_keys({{0, 0, 0, 0}}, {0.0}, make_config());
+
+    auto coarsened = adaptive_pool(t, 0, Reduction::Mean);
+    CHECK_EQ(coarsened.size(), int64_t(1));
+    CHECK_NEAR(coarsened.features()[0][0].item<double>(), 4.0, 1e-12);
+    CHECK_NEAR(t.resample_to(ref, Reduction::Mean).features()[0][0].item<double>(), 4.0, 1e-12);
+    CHECK_NEAR(t.resample_to(ref, Reduction::Sum).features()[0][0].item<double>(), 64.0, 1e-12);
+    CHECK_NEAR(t.resample_to(ref, Reduction::Max).features()[0][0].item<double>(), 8.0, 1e-12);
+}
+
+TEST(topology_resample_to_coarser_reference_equals_adaptive_pool) {
+    for (uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
+        auto t = random_tree(3, seed, 2);
+        for (uint32_t level : {0u, 1u, 2u})
+            for (auto r : {Reduction::Mean, Reduction::Sum, Reduction::Max}) {
+                auto pooled = adaptive_pool(t, level, r);
+                auto resampled = t.resample_to(pooled, r);
+                CHECK_EQ(resampled.size(), pooled.size());
+                CHECK_ALLCLOSE(resampled.features(), pooled.features(), 1e-12, 1e-12);
+            }
+    }
+}
+
+TEST(topology_resample_to_replicates_coarser_and_zero_fills_uncovered) {
+    auto t = from_keys({{0, 0, 0, 0}}, {3.0}, make_config());
+    // Reference: the 8 children of the source leaf plus a far-away leaf the source does not cover.
+    std::vector<std::array<int64_t, 4>> keys;
+    for (int i = 0; i < 8; ++i) keys.push_back({i & 1, (i >> 1) & 1, (i >> 2) & 1, 1});
+    keys.push_back({5, 0, 0, 0});
+    auto ref = from_keys(keys, std::vector<double>(keys.size(), 0.0), make_config());
+    for (auto r : {Reduction::Mean, Reduction::Sum, Reduction::Max}) {
+        auto out = t.resample_to(ref, r);
+        CHECK_EQ(out.size(), int64_t(9));
+        CHECK_NEAR(out.features()[ref.index_of({5, 0, 0}, 0)][0].item<double>(), 0.0, 0.0);
+        for (int i = 0; i < 8; ++i)
+            CHECK_NEAR(out.features()[ref.index_of({i & 1, (i >> 1) & 1, (i >> 2) & 1}, 1)][0]
+                           .item<double>(),
+                       3.0, 1e-12);
+    }
 }
