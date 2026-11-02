@@ -122,23 +122,31 @@ void check_region(const Topology &t, const AxisAlignedRegion &r) {
     throw std::invalid_argument("region dimension does not match the tensor dimension");
 }
 
-// Replaces every selected leaf by its 2^D children.
+// Replaces every selected leaf by its 2^D children. With `keep` (drop_empty), only the
+// children whose bit is set are created (bit i = i-th child of child_keys); Split then
+// divides by the number of kept children so sums are still conserved.
 StepResult refine_step(const Topology &t, const at::Tensor &f, const std::vector<char> &sel,
-                       RefinePolicy policy) {
+                       RefinePolicy policy, const std::vector<uint32_t> *keep = nullptr) {
   std::vector<Entry> entries;
   std::vector<Key> kids;
-  const double split = policy == RefinePolicy::Split ? 1.0 / double(1u << t.D) : 1.0;
+  const bool split = policy == RefinePolicy::Split;
   for (int64_t i = 0; i < t.size(); ++i) {
-    if (!sel[static_cast<size_t>(i)]) {
+    const uint32_t mask = keep ? (*keep)[static_cast<size_t>(i)] : ~0u;
+    if (!sel[static_cast<size_t>(i)] || mask == 0) {
       entries.push_back({t.keys[i], i, 1.0});
       continue;
     }
     kids.clear();
     detail::child_keys(t.keys[i], t.D, kids);
-    for (const Key &c : kids)
-      entries.push_back({c, i, split});
+    int kept = 0;
+    for (size_t c = 0; c < kids.size(); ++c)
+      kept += (mask >> c) & 1u;
+    const double scale = split ? 1.0 / double(kept) : 1.0;
+    for (size_t c = 0; c < kids.size(); ++c)
+      if ((mask >> c) & 1u)
+        entries.push_back({kids[c], i, scale});
   }
-  return finish(t.config, std::move(entries), f, Reduction::Sum, policy == RefinePolicy::Split);
+  return finish(t.config, std::move(entries), f, Reduction::Sum, split);
 }
 
 // Merges leaves at `level` into their parents when the parent box is inside region.
@@ -175,6 +183,43 @@ std::vector<int64_t> assign_points(const Topology &t, const at::Tensor &points) 
     out[static_cast<size_t>(i)] = t.find_containing(q);
   }
   return out;
+}
+
+// drop_empty support. For every selected leaf, the bitmask of its children (bit i = i-th
+// child of child_keys) that contain at least one source point; selected leaves without
+// any source point are deselected (they are left unrefined). `leaf` is assign_points().
+std::vector<uint32_t> occupied_children(const Topology &t, const at::Tensor &points,
+                                        const std::vector<int64_t> &leaf, std::vector<char> &sel) {
+  const uint32_t all = (1u << t.D) - 1u;
+  std::vector<uint32_t> mask(static_cast<size_t>(t.size()), 0);
+  const double *p = points.data_ptr<double>();
+  for (size_t i = 0; i < leaf.size(); ++i) {
+    const int64_t j = leaf[i];
+    if (j < 0 || !sel[static_cast<size_t>(j)])
+      continue;
+    const Key &parent = t.keys[j];
+    DVec q{};
+    for (int d = 0; d < t.D; ++d)
+      q[d] = p[static_cast<int64_t>(i) * t.D + d];
+    Key child;
+    if (!t.locate(q, parent.level + 1, child) || !(detail::parent_key(child) == parent)) {
+      mask[j] = all; // cannot place the point in a child: keep them all (never drop data)
+      continue;
+    }
+    uint32_t bit = 0;
+    for (int d = 0; d < t.D; ++d)
+      bit |= static_cast<uint32_t>(child.coordinates[d] & 1) << d;
+    mask[j] |= 1u << bit;
+  }
+  for (size_t j = 0; j < mask.size(); ++j)
+    if (mask[j] == 0)
+      sel[j] = 0;
+  return mask;
+}
+
+void check_drop_empty(bool drop_empty, const std::shared_ptr<const SourcePoints> &source) {
+  if (drop_empty && !source)
+    throw std::invalid_argument("drop_empty refinement requires source points (use from_points)");
 }
 
 void check_features(const at::Tensor &f) {
@@ -327,12 +372,33 @@ int64_t AdaptiveSparseTensor::index_of_key(const std::vector<int64_t> &coordinat
   return topology_->find(k);
 }
 
+bool AdaptiveSparseTensor::refine_selected(std::vector<char> &sel, RefinePolicy policy,
+                                           bool drop_empty, const std::vector<int64_t> *leaf) {
+  const Topology &t = *topology_;
+  std::vector<uint32_t> keep;
+  if (drop_empty) {
+    std::vector<int64_t> own;
+    if (!leaf) {
+      own = assign_points(t, source_->points);
+      leaf = &own;
+    }
+    keep = occupied_children(t, source_->points, *leaf, sel);
+  }
+  if (std::find(sel.begin(), sel.end(), char(1)) == sel.end())
+    return false;
+  auto r = refine_step(t, features_, sel, policy, drop_empty ? &keep : nullptr);
+  topology_ = std::move(r.topology);
+  features_ = std::move(r.features);
+  return true;
+}
+
 void AdaptiveSparseTensor::refine(const AxisAlignedRegion &region, uint32_t target_level,
-                                  RefinePolicy policy) {
+                                  RefinePolicy policy, bool drop_empty) {
   const Topology &t0 = *topology_;
   check_region(t0, region);
   if (target_level > t0.max_depth)
     throw std::invalid_argument("refine target_level exceeds max_depth");
+  check_drop_empty(drop_empty, source_);
   while (true) {
     const Topology &t = *topology_;
     std::vector<char> sel(static_cast<size_t>(t.size()), 0);
@@ -342,11 +408,8 @@ void AdaptiveSparseTensor::refine(const AxisAlignedRegion &region, uint32_t targ
         sel[i] = 1;
         any = true;
       }
-    if (!any)
+    if (!any || !refine_selected(sel, policy, drop_empty, nullptr))
       break;
-    auto r = refine_step(t, features_, sel, policy);
-    topology_ = std::move(r.topology);
-    features_ = std::move(r.features);
   }
 }
 
@@ -367,7 +430,9 @@ void AdaptiveSparseTensor::coarsen(const AxisAlignedRegion &region, uint32_t tar
 
 void AdaptiveSparseTensor::refine_if(
     const std::function<bool(int64_t, const std::array<double, 4> &, const std::array<double, 4> &,
-                             uint32_t)> &criterion) {
+                             uint32_t)> &criterion,
+    bool drop_empty) {
+  check_drop_empty(drop_empty, source_);
   while (true) {
     const Topology &t = *topology_;
     std::vector<char> sel(static_cast<size_t>(t.size()), 0);
@@ -382,21 +447,19 @@ void AdaptiveSparseTensor::refine_if(
         any = true;
       }
     }
-    if (!any)
+    if (!any || !refine_selected(sel, RefinePolicy::Replicate, drop_empty, nullptr))
       break;
-    auto r = refine_step(t, features_, sel, RefinePolicy::Replicate);
-    topology_ = std::move(r.topology);
-    features_ = std::move(r.features);
   }
 }
 
-void AdaptiveSparseTensor::refine_by_density(int64_t threshold) {
+void AdaptiveSparseTensor::refine_by_density(int64_t threshold, bool drop_empty) {
   if (!source_)
     throw std::invalid_argument("refine_by_density requires source points (use from_points)");
   while (true) {
     const Topology &t = *topology_;
+    const auto leaf = assign_points(t, source_->points);
     std::vector<int64_t> count(static_cast<size_t>(t.size()), 0);
-    for (int64_t j : assign_points(t, source_->points))
+    for (int64_t j : leaf)
       if (j >= 0)
         ++count[j];
     std::vector<char> sel(static_cast<size_t>(t.size()), 0);
@@ -406,15 +469,12 @@ void AdaptiveSparseTensor::refine_by_density(int64_t threshold) {
         sel[i] = 1;
         any = true;
       }
-    if (!any)
+    if (!any || !refine_selected(sel, RefinePolicy::Replicate, drop_empty, &leaf))
       break;
-    auto r = refine_step(t, features_, sel, RefinePolicy::Replicate);
-    topology_ = std::move(r.topology);
-    features_ = std::move(r.features);
   }
 }
 
-void AdaptiveSparseTensor::refine_by_variance(double threshold) {
+void AdaptiveSparseTensor::refine_by_variance(double threshold, bool drop_empty) {
   if (!source_)
     throw std::invalid_argument("refine_by_variance requires source points (use from_points)");
   while (true) {
@@ -447,11 +507,8 @@ void AdaptiveSparseTensor::refine_by_variance(double threshold) {
           any = true;
         }
     }
-    if (!any)
+    if (!any || !refine_selected(sel, RefinePolicy::Replicate, drop_empty, &leaf))
       break;
-    auto r = refine_step(t, features_, sel, RefinePolicy::Replicate);
-    topology_ = std::move(r.topology);
-    features_ = std::move(r.features);
   }
 }
 
