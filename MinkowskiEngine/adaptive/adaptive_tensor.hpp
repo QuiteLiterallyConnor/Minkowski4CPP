@@ -112,7 +112,9 @@ public:
   AdaptiveSparseTensor resample_uniform(uint32_t level,
                                         Reduction reduction = Reduction::Mean) const;
   // Re-expresses this tensor on reference's leaves: finer leaves are reduced,
-  // coarser ones replicated, uncovered reference leaves get zeros.
+  // coarser ones replicated, uncovered reference leaves get zeros. Both tensors
+  // must use the same grid (origin and base_voxel_size; max_depth may differ).
+  // Reductions match coarsen(): Mean averages occupied children level by level.
   AdaptiveSparseTensor resample_to(const AdaptiveSparseTensor &reference,
                                    Reduction reduction = Reduction::Mean) const;
 

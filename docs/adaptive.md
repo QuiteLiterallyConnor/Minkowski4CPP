@@ -152,7 +152,10 @@ return zeros, or with
 volume-weighted mean of the leaves inside the finest cell that contains the
 query and at least one leaf (useful after `drop_empty` refinement, which leaves
 point-free children uncovered). `other.resample_to(t)` aligns another tensor to
-`t`'s leaves; addition requires identical topology.
+`t`'s leaves; addition requires identical topology. Both tensors must share
+`origin` and `base_voxel_size` (`max_depth` may differ). Finer leaves are
+reduced exactly like `coarsen` (so `Mean` averages occupied children level by
+level), coarser leaves are replicated, and uncovered leaves get zeros.
 
 Uniform resampling can expand a sparse hierarchy dramatically. The
 benchmark skips expansions above five million voxels; estimate the output
