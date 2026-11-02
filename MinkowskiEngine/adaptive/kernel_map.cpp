@@ -1,13 +1,24 @@
 #include "kernel_map.hpp"
 #include "adaptive_topology.hpp"
+#include "part_split.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cstring>
 #include <deque>
+#include <list>
 #include <map>
 #include <mutex>
 #include <stdexcept>
 #include <tuple>
+#include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
+
+#ifdef USE_CUDA
+#include <c10/cuda/CUDACachingAllocator.h>
+#include <c10/cuda/CUDAStream.h>
+#endif
 
 namespace minkowski {
 namespace adaptive {
@@ -86,6 +97,32 @@ std::shared_ptr<const Topology> derive_output_topology(const std::shared_ptr<con
   return Topology::make(in->config, std::move(kept));
 }
 
+// The leaf containing the centre of grid cell `cell`, or -1: find_containing(centre) in integer
+// arithmetic. At a level l <= cell.level the centre lies in the cell's ancestor; at a finer
+// level l = cell.level + m in the cell's child whose lower corner is the centre (cells are
+// half-open), coordinates c * 2^m + 2^(m-1). No rounding is involved, so the result depends
+// only on the keys, never on where the grid sits in space.
+int64_t find_containing_center(const Topology &t, const Topology::NodeTable &nodes,
+                               const Key &cell) {
+  Key k{};
+  for (uint32_t l : t.present_levels) {
+    k.level = l;
+    if (l <= cell.level) {
+      const uint32_t m = cell.level - l;
+      for (int d = 0; d < t.D; ++d)
+        k.coordinates[d] = cell.coordinates[d] >> m; // floor, also for negatives
+    } else {
+      const uint32_t m = l - cell.level;
+      for (int d = 0; d < t.D; ++d) // |c| < 2^53 and m <= max_depth: no overflow
+        k.coordinates[d] = cell.coordinates[d] * (int64_t(1) << m) + (int64_t(1) << (m - 1));
+    }
+    const int64_t v = nodes.lookup(k);
+    if (v != Topology::NodeTable::kInternal)
+      return v; // leaf index, or kEmpty (-1)
+  }
+  return -1;
+}
+
 AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
                               const AdaptiveKernelConfig &kc) {
   const int K = kc.kernel_size;
@@ -117,8 +154,8 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
     std::vector<std::vector<double>> w_k;
   };
   std::vector<Lists> lists(static_cast<size_t>(blocks));
-  if (n_out > 0)
-    in.node_table(); // build the shared lookup table once, before the workers start
+  // Build the shared lookup table once, before the workers start.
+  const Topology::NodeTable *in_nodes = n_out > 0 ? &in.node_table() : nullptr;
   const double *in_volumes = in.volumes.data_ptr<double>();
   detail::run_parallel_blocks(n_out, blocks, [&](int b, int64_t o_begin, int64_t o_end) {
     auto &in_k = lists[b].in_k, &out_k = lists[b].out_k;
@@ -153,7 +190,12 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
             w_k[k].push_back(ov / Vo);
           });
         } else {
-          const int64_t j = in.find_containing(t);
+          // The tap point t is the centre of the output-level cell ok + offset; resolve it on
+          // the integer grid (same leaf as in.find_containing(t), without rounding).
+          Key cell = ok;
+          for (int d = 0; d < D; ++d)
+            cell.coordinates[d] += offsets[k][d];
+          const int64_t j = find_containing_center(in, *in_nodes, cell);
           if (j < 0)
             continue;
           in_k[k].push_back(j);
@@ -204,7 +246,636 @@ AdaptiveKernelMap build_pairs(const Topology &out, const Topology &in,
 
 using CacheKey = std::tuple<uint64_t, int, int, int>;
 
+// ---------------------------------------------------------------- part reuse
+
+// Kernel map of one part (see KernelMapCache), in the part's own leaf numbering.
+// A part's pair arrays on a device (device composition, see compose_parts_device).
+struct PartDevice {
+  at::Device device{at::kCPU};
+  at::Tensor in, out, weight; // indices: uint16 bits (kInt16) if narrow, else int32; float64 weights
+  bool narrow = false;        // local indices < 65536 stored in 16 bits (half the device memory)
+  size_t group = 0;           // backing upload group in PartDeviceStore
+};
+
+struct PartMap {
+  std::vector<uint64_t> signature; // D, max_depth, kernel config, base voxel size bits
+  std::vector<Key> keys;           // the part's leaves, translated to start at level-0 x = 0
+  std::vector<int64_t> out_counts; // output leaves per level
+  std::vector<int64_t> offsets;    // num_kernels + 1 prefix offsets
+  std::vector<int32_t> in, out;    // pairs, sorted by slot, then out (as in the full map)
+  std::vector<double> weight;      // VolumeWeighted only; CenterSampled weights are 1
+  uint64_t hash = 0;
+  // Uploaded on first device composition, freed with the part. Guarded by
+  // PartDeviceStore::mutex; not counted in bytes() (the budget covers host memory).
+  mutable std::vector<PartDevice> device_copies;
+
+  bool weighted() const {
+    return signature[3] == static_cast<uint64_t>(AdaptiveConvMode::VolumeWeighted);
+  }
+  size_t bytes() const {
+    return sizeof(PartMap) + signature.size() * sizeof(uint64_t) + keys.size() * sizeof(Key) +
+           (out_counts.size() + offsets.size()) * sizeof(int64_t) +
+           (in.size() + out.size()) * sizeof(int32_t) + weight.size() * sizeof(double);
+  }
+};
+
+
+// The upload slabs, rather than their per-part views, are the unit of eviction. Weak owners
+// do not prolong the host part's lifetime; in-flight composition holds its own tensor handles.
+// All part device_copies and these counters are protected by this mutex. When both mutexes
+// are needed, the outer KernelMapCache mutex is always acquired first.
+struct PartDeviceStore {
+  struct Group {
+    size_t id, bytes;
+    std::vector<std::weak_ptr<const PartMap>> owners;
+  };
+  using List = std::list<Group>;
+  std::mutex mutex;
+  size_t budget = size_t(-1), bytes = 0, peak_bytes = 0, hits = 0, misses = 0, next_id = 1;
+  List lru; // most recently used first
+  std::unordered_map<size_t, List::iterator> index;
+
+  void erase(List::iterator it) {
+    for (const auto &owner : it->owners)
+      if (const auto p = owner.lock()) {
+        auto &copies = p->device_copies;
+        copies.erase(std::remove_if(copies.begin(), copies.end(),
+                                    [&](const PartDevice &d) { return d.group == it->id; }),
+                     copies.end());
+      }
+    bytes -= it->bytes;
+    index.erase(it->id);
+    lru.erase(it);
+  }
+  void prune() {
+    for (auto it = lru.begin(); it != lru.end();) {
+      const auto current = it++;
+      if (std::all_of(current->owners.begin(), current->owners.end(),
+                       [](const auto &p) { return p.expired(); }))
+        erase(current);
+    }
+  }
+  void trim(size_t reserve = 0) {
+    while (!lru.empty() && bytes > budget - reserve)
+      erase(std::prev(lru.end()));
+  }
+  void touch(size_t id) {
+    const auto it = index.find(id);
+    if (it != index.end()) lru.splice(lru.begin(), lru, it->second);
+  }
+  void clear() {
+    while (!lru.empty()) erase(lru.begin());
+    hits = misses = peak_bytes = 0;
+  }
+};
+
+bool part_reuse_mode(const AdaptiveKernelConfig &kc) {
+  return kc.mode == AdaptiveConvMode::CenterSampled || kc.mode == AdaptiveConvMode::VolumeWeighted;
+}
+
+std::vector<uint64_t> part_signature(const Topology &t, const AdaptiveKernelConfig &kc) {
+  std::vector<uint64_t> s{static_cast<uint64_t>(t.D), t.max_depth,
+                          static_cast<uint64_t>(kc.kernel_size), static_cast<uint64_t>(kc.mode),
+                          static_cast<uint64_t>(static_cast<int64_t>(kc.output_level_shift))};
+  for (int d = 0; d < t.D; ++d) { // VolumeWeighted weights depend on the voxel size bits
+    uint64_t bits;
+    std::memcpy(&bits, &t.base[d], sizeof(bits));
+    s.push_back(bits);
+  }
+  return s;
+}
+
+// The level-0 cell (along the first axis) holding a key.
+inline int64_t level0_x(const Key &k) { return k.coordinates[0] >> k.level; }
+
+// Leaves of a topology grouped into parts: runs of occupied level-0 x cells separated by at
+// least r empty ones. A tap lands at most r level-0 cells from the level-0 cell of its output
+// leaf (outputs are never coarser than level 0), so no tap crosses between parts.
+struct Split {
+  std::vector<int64_t> first_x;             // first level-0 x cell of each part, ascending
+  std::vector<std::vector<int64_t>> leaves; // leaf indices of each part, ascending
+
+  void assign(const Topology &t) {
+    leaves = detail::part_leaves(first_x, t.keys);
+  }
+};
+
+// first_x is empty only for an empty topology; a topology that does not split is one part.
+Split split_parts(const Topology &t, int r) {
+  Split s;
+  s.first_x = detail::part_starts(t.keys, r);
+  return s;
+}
+
+uint64_t part_hash(const std::vector<uint64_t> &signature, const std::vector<Key> &keys) {
+  uint64_t h = mix64(keys.size());
+  for (uint64_t v : signature)
+    h = mix64(h ^ v);
+  const detail::KeyHash kh;
+  for (const Key &k : keys)
+    h = mix64(h ^ static_cast<uint64_t>(kh(k)));
+  return h;
+}
+
+// Converts a map built on a part's own topology. False if an index does not fit in int32.
+bool to_part_map(const AdaptiveKernelMap &m, const Topology &out, PartMap &pm) {
+  if (out.size() > INT32_MAX || static_cast<int64_t>(pm.keys.size()) > INT32_MAX)
+    return false;
+  const int64_t P = m.in_index.numel();
+  pm.out_counts = out.counts;
+  pm.offsets = m.kernel_offsets;
+  pm.in.resize(static_cast<size_t>(P));
+  pm.out.resize(static_cast<size_t>(P));
+  const int64_t *ip = m.in_index.data_ptr<int64_t>();
+  const int64_t *op = m.out_index.data_ptr<int64_t>();
+  for (int64_t q = 0; q < P; ++q) {
+    pm.in[q] = static_cast<int32_t>(ip[q]);
+    pm.out[q] = static_cast<int32_t>(op[q]);
+  }
+  if (pm.weighted()) {
+    const double *wp = m.weight.data_ptr<double>();
+    pm.weight.assign(wp, wp + P);
+  }
+  return true;
+}
+
+// Cuts the full map of a split topology into per-part maps (pm[p] already holds signature and
+// keys). False if a pair links two parts or an index does not fit in int32.
+bool extract_parts(const AdaptiveKernelMap &m, const Topology &in, const Topology &out,
+                   const Split &in_split, const Split &out_split, std::vector<PartMap> &pm) {
+  const int64_t np = static_cast<int64_t>(pm.size());
+  if (in.size() > INT32_MAX || out.size() > INT32_MAX)
+    return false;
+  // Part of every input leaf and its index inside the part.
+  std::vector<int32_t> in_part(static_cast<size_t>(in.size())), in_local(in_part.size());
+  // Per part and level: the part's outputs at that level are one run of the whole topology's
+  // outputs (level first, then parts along x); level_begin indexes out_split.leaves[p].
+  std::vector<std::vector<int64_t>> level_begin(static_cast<size_t>(np));
+  const size_t nl = out.counts.size();
+  std::atomic<bool> ok{true};
+  const int64_t *ip = m.in_index.data_ptr<int64_t>();
+  const int64_t *op = m.out_index.data_ptr<int64_t>();
+  const double *wp = m.weight.data_ptr<double>();
+  const bool weighted = pm[0].weighted();
+  const int blocks = detail::parallel_block_count(np, m.in_index.numel() + in.size());
+  detail::run_parallel_blocks(np, blocks, [&](int, int64_t p_begin, int64_t p_end) {
+    for (int64_t p = p_begin; p < p_end; ++p) {
+      const auto &leaves = in_split.leaves[p];
+      for (size_t i = 0; i < leaves.size(); ++i) {
+        in_part[leaves[i]] = static_cast<int32_t>(p);
+        in_local[leaves[i]] = static_cast<int32_t>(i);
+      }
+      const auto &outs = out_split.leaves[p];
+      PartMap &a = pm[p];
+      a.out_counts.assign(nl, 0);
+      for (int64_t o : outs)
+        ++a.out_counts[out.keys[o].level];
+      auto &lb = level_begin[p];
+      lb.assign(nl + 1, 0);
+      for (size_t l = 0; l < nl; ++l) {
+        lb[l + 1] = lb[l] + a.out_counts[l];
+        if (a.out_counts[l] > 0 && outs[lb[l + 1] - 1] - outs[lb[l]] + 1 != a.out_counts[l])
+          ok = false; // not one run: the split assumption does not hold
+      }
+    }
+  });
+  if (!ok)
+    return false;
+  detail::run_parallel_blocks(np, blocks, [&](int, int64_t p_begin, int64_t p_end) {
+    for (int64_t p = p_begin; p < p_end && ok; ++p) {
+      PartMap &a = pm[p];
+      const auto &outs = out_split.leaves[p];
+      const auto &lb = level_begin[p];
+      a.offsets.assign(1, 0);
+      for (int64_t k = 0; k < m.num_kernels; ++k) {
+        const int64_t *kb = op + m.kernel_offsets[k], *ke = op + m.kernel_offsets[k + 1];
+        for (size_t l = 0; l < nl; ++l) {
+          if (lb[l + 1] == lb[l])
+            continue;
+          const int64_t first = outs[lb[l]], last = outs[lb[l + 1] - 1];
+          const int64_t q0 = std::lower_bound(kb, ke, first) - op;
+          const int64_t q1 = std::upper_bound(op + q0, ke, last) - op;
+          for (int64_t q = q0; q < q1; ++q) {
+            if (in_part[ip[q]] != p) {
+              ok = false; // a tap crossed between parts
+              return;
+            }
+            a.in.push_back(in_local[ip[q]]);
+            a.out.push_back(static_cast<int32_t>(op[q] - first + lb[l]));
+            if (weighted)
+              a.weight.push_back(wp[q]);
+          }
+        }
+        a.offsets.push_back(static_cast<int64_t>(a.in.size()));
+      }
+    }
+  });
+  return ok;
+}
+
+// The map of a split topology from its parts' maps. Pairs come out ordered by slot, then by
+// output leaf - level first, then part (parts are ordered along the first axis, which key_less
+// compares first within a level) - exactly as build_pairs orders them.
+AdaptiveKernelMap compose_parts(const std::vector<std::shared_ptr<const PartMap>> &pm,
+                                const Split &in_split, const Split &out_split) {
+  const size_t np = pm.size();
+  const int64_t nk = static_cast<int64_t>(pm[0]->offsets.size()) - 1;
+  const size_t nl = pm[0]->out_counts.size();
+  const bool weighted = pm[0]->weighted();
+  std::vector<std::vector<int64_t>> out_begin(np); // per part: first local output of each level
+  for (size_t p = 0; p < np; ++p) {
+    out_begin[p].assign(nl + 1, 0);
+    for (size_t l = 0; l < nl; ++l)
+      out_begin[p][l + 1] = out_begin[p][l] + pm[p]->out_counts[l];
+  }
+  AdaptiveKernelMap m;
+  m.num_kernels = nk;
+  m.kernel_offsets.assign(static_cast<size_t>(nk) + 1, 0);
+  for (int64_t k = 0; k < nk; ++k) {
+    int64_t n = 0;
+    for (size_t p = 0; p < np; ++p)
+      n += pm[p]->offsets[k + 1] - pm[p]->offsets[k];
+    m.kernel_offsets[k + 1] = m.kernel_offsets[k] + n;
+  }
+  const int64_t P = m.kernel_offsets[nk];
+  m.in_index = torch::empty({P}, torch::kInt64);
+  m.out_index = torch::empty({P}, torch::kInt64);
+  m.kernel_index = torch::empty({P}, torch::kInt64);
+  m.weight = torch::empty({P}, torch::kFloat64);
+  int64_t *in_p = m.in_index.data_ptr<int64_t>();
+  int64_t *out_p = m.out_index.data_ptr<int64_t>();
+  int64_t *k_p = m.kernel_index.data_ptr<int64_t>();
+  double *w_p = m.weight.data_ptr<double>();
+  const int blocks = detail::parallel_block_count(nk, P);
+  detail::run_parallel_blocks(nk, blocks, [&](int, int64_t k_begin, int64_t k_end) {
+    for (int64_t k = k_begin; k < k_end; ++k) {
+      int64_t at = m.kernel_offsets[k];
+      for (size_t l = 0; l < nl; ++l)
+        for (size_t p = 0; p < np; ++p) {
+          const PartMap &a = *pm[p];
+          const int32_t *ob = a.out.data() + a.offsets[k];
+          const int32_t *oe = a.out.data() + a.offsets[k + 1];
+          const int64_t q0 = std::lower_bound(ob, oe, out_begin[p][l]) - a.out.data();
+          const int64_t q1 = std::lower_bound(ob, oe, out_begin[p][l + 1]) - a.out.data();
+          const int64_t *in_map = in_split.leaves[p].data();
+          const int64_t *out_map = out_split.leaves[p].data();
+          for (int64_t q = q0; q < q1; ++q, ++at) {
+            in_p[at] = in_map[a.in[q]];
+            out_p[at] = out_map[a.out[q]];
+            w_p[at] = weighted ? a.weight[q] : 1.0;
+            k_p[at] = k;
+          }
+        }
+    }
+  });
+  return m;
+}
+
+#ifdef USE_CUDA
+// The device copies of the parts' pair arrays. Parts without one on `device` are uploaded
+// together: their arrays are packed into one 16-bit, one int32 (and one float64) host buffer,
+// copied with one transfer each, and every part gets views into them. A part whose local leaf
+// indices all fit in 16 bits (fewer than 65536 inputs and outputs, as for typical samples) is
+// stored narrow: 4 B per pair instead of 8. (A batch's buffers stay allocated until all of its
+// parts are freed.)
+std::vector<PartDevice> parts_on_device(const std::vector<std::shared_ptr<const PartMap>> &pm,
+                                        const at::Device &device, PartDeviceStore &store) {
+  std::lock_guard<std::mutex> lock(store.mutex);
+  store.prune();
+  std::vector<PartDevice> out(pm.size());
+  std::vector<size_t> missing;
+  std::unordered_map<const PartMap *, size_t> unique;
+  std::vector<size_t> representative(pm.size());
+  for (size_t p = 0; p < pm.size(); ++p) {
+    const auto inserted = unique.emplace(pm[p].get(), p);
+    representative[p] = inserted.first->second;
+    if (!inserted.second) continue; // repeated sample in a batch: one upload and one owner
+    bool found = false;
+    for (const auto &d : pm[p]->device_copies)
+      if (d.device == device) {
+        out[p] = d;
+        store.touch(d.group);
+        ++store.hits;
+        found = true;
+        break;
+      }
+    if (!found) {
+      ++store.misses;
+      missing.push_back(p);
+    }
+  }
+  if (missing.empty()) {
+    for (size_t p = 0; p < pm.size(); ++p) out[p] = out[representative[p]];
+    return out;
+  }
+  const bool weighted = pm[missing[0]]->weighted();
+  const auto fits16 = [](const PartMap &a) {
+    int64_t n_out = 0;
+    for (int64_t c : a.out_counts)
+      n_out += c;
+    const int64_t limit = detail::cuda_part_compose_narrow_limit();
+    return static_cast<int64_t>(a.keys.size()) <= limit && n_out <= limit;
+  };
+  std::vector<uint16_t> pairs16;
+  std::vector<int32_t> pairs32;
+  std::vector<double> weights;
+  for (size_t p : missing) {
+    if (fits16(*pm[p])) {
+      pairs16.insert(pairs16.end(), pm[p]->in.begin(), pm[p]->in.end());
+      pairs16.insert(pairs16.end(), pm[p]->out.begin(), pm[p]->out.end());
+    } else {
+      pairs32.insert(pairs32.end(), pm[p]->in.begin(), pm[p]->in.end());
+      pairs32.insert(pairs32.end(), pm[p]->out.begin(), pm[p]->out.end());
+    }
+    if (weighted)
+      weights.insert(weights.end(), pm[p]->weight.begin(), pm[p]->weight.end());
+  }
+  const size_t upload_bytes = pairs16.size() * sizeof(uint16_t) +
+                              pairs32.size() * sizeof(int32_t) + weights.size() * sizeof(double);
+  const bool retain = store.budget != 0 && upload_bytes <= store.budget;
+  const size_t group = retain ? store.next_id++ : 0;
+  if (retain) store.trim(upload_bytes); // evict before allocating when possible
+  at::Tensor dev16, dev32, dev_weights;
+  if (!pairs16.empty()) // kInt16 carries the uint16 bits; the kernel reads them as uint16
+    dev16 = torch::from_blob(pairs16.data(), {static_cast<int64_t>(pairs16.size())}, torch::kInt16)
+                .to(device);
+  if (!pairs32.empty())
+    dev32 = torch::from_blob(pairs32.data(), {static_cast<int64_t>(pairs32.size())}, torch::kInt32)
+                .to(device);
+  if (weighted)
+    dev_weights = torch::from_blob(weights.data(), {static_cast<int64_t>(weights.size())},
+                                   torch::kFloat64)
+                      .to(device);
+  int64_t at16 = 0, at32 = 0, wat = 0;
+  for (size_t p : missing) {
+    const int64_t n = static_cast<int64_t>(pm[p]->in.size());
+    PartDevice d;
+    d.device = device;
+    d.group = group;
+    d.narrow = fits16(*pm[p]);
+    const at::Tensor &buf = d.narrow ? dev16 : dev32;
+    int64_t &at = d.narrow ? at16 : at32;
+    if (buf.defined()) {
+      d.in = buf.slice(0, at, at + n);
+      d.out = buf.slice(0, at + n, at + 2 * n);
+    } else { // no pairs at all in this width (n == 0)
+      d.in = d.out = torch::empty({0}, torch::TensorOptions().device(device).dtype(torch::kInt32));
+    }
+    at += 2 * n;
+    if (weighted) {
+      d.weight = dev_weights.slice(0, wat, wat + n);
+      wat += n;
+    }
+    if (retain) pm[p]->device_copies.push_back(d);
+    out[p] = d;
+  }
+  if (retain) {
+    PartDeviceStore::Group record{group, upload_bytes, {}};
+    for (size_t p : missing) record.owners.push_back(pm[p]);
+    store.lru.push_front(std::move(record));
+    store.index.emplace(group, store.lru.begin());
+    store.bytes += upload_bytes;
+    store.peak_bytes = std::max(store.peak_bytes, store.bytes);
+  }
+  for (size_t p = 0; p < pm.size(); ++p) out[p] = out[representative[p]];
+  return out;
+}
+
+// compose_parts on a CUDA device: the same pairs in the same order, written by one kernel
+// from the parts' device arrays into the entry's device slot. The host only finds each
+// (slot, level, part) segment's pair range (binary searches on the parts' host arrays) and
+// uploads that table with the parts' leaf numbering - O(segments + leaves), not O(pairs).
+// The returned map has its kernel offsets; its host arrays are left undefined.
+AdaptiveKernelMap compose_parts_device(const std::vector<std::shared_ptr<const PartMap>> &pm,
+                                       const Split &in_split, const Split &out_split,
+                                       const at::Device &device, KernelMapDeviceCache &dc,
+                                       PartDeviceStore &store) {
+  const size_t np = pm.size();
+  const int64_t nk = static_cast<int64_t>(pm[0]->offsets.size()) - 1;
+  const size_t nl = pm[0]->out_counts.size();
+  const bool weighted = pm[0]->weighted();
+  std::vector<std::vector<int64_t>> out_begin(np);
+  for (size_t p = 0; p < np; ++p) {
+    out_begin[p].assign(nl + 1, 0);
+    for (size_t l = 0; l < nl; ++l)
+      out_begin[p][l + 1] = out_begin[p][l] + pm[p]->out_counts[l];
+  }
+  AdaptiveKernelMap m;
+  m.num_kernels = nk;
+  m.kernel_offsets.assign(static_cast<size_t>(nk) + 1, 0);
+  for (int64_t k = 0; k < nk; ++k) {
+    int64_t n = 0;
+    for (size_t p = 0; p < np; ++p)
+      n += pm[p]->offsets[k + 1] - pm[p]->offsets[k];
+    m.kernel_offsets[k + 1] = m.kernel_offsets[k] + n;
+  }
+  const int64_t P = m.kernel_offsets[nk];
+  std::vector<int64_t> table; // segments, then pointers, bases and leaves (see cuda_compose_parts)
+  for (int64_t k = 0; k < nk; ++k) {
+    int64_t at = m.kernel_offsets[k];
+    for (size_t l = 0; l < nl; ++l)
+      for (size_t p = 0; p < np; ++p) {
+        const PartMap &a = *pm[p];
+        const int32_t *ob = a.out.data() + a.offsets[k];
+        const int32_t *oe = a.out.data() + a.offsets[k + 1];
+        const int64_t q0 = std::lower_bound(ob, oe, out_begin[p][l]) - a.out.data();
+        const int64_t q1 = std::lower_bound(ob, oe, out_begin[p][l + 1]) - a.out.data();
+        if (q1 > q0) {
+          table.insert(table.end(), {at, q0, q1 - q0, static_cast<int64_t>(p)});
+          at += q1 - q0;
+        }
+      }
+  }
+  const int64_t segments = static_cast<int64_t>(table.size()) / 4;
+  const std::vector<PartDevice> copies = parts_on_device(pm, device, store);
+  const auto stream = c10::cuda::getCurrentCUDAStream(device.index());
+  for (size_t p = 0; p < np; ++p) {
+    // An upload can originate on another stream; eviction after this async launch must
+    // not recycle its backing allocation until the composition's stream has finished.
+    for (const auto &tensor : {copies[p].in, copies[p].out, copies[p].weight})
+      if (tensor.defined())
+        c10::cuda::CUDACachingAllocator::recordStream(tensor.storage().data_ptr(), stream);
+    table.push_back(reinterpret_cast<int64_t>(copies[p].in.data_ptr()));
+    table.push_back(reinterpret_cast<int64_t>(copies[p].out.data_ptr()));
+    table.push_back(copies[p].weight.defined() ? reinterpret_cast<int64_t>(copies[p].weight.data_ptr())
+                                               : int64_t(0));
+    table.push_back(copies[p].narrow ? 2 : 4);
+  }
+  int64_t n_in = 0, n_out = 0;
+  for (size_t p = 0; p < np; ++p) {
+    table.push_back(n_in);
+    table.push_back(n_out);
+    n_in += static_cast<int64_t>(in_split.leaves[p].size());
+    n_out += static_cast<int64_t>(out_split.leaves[p].size());
+  }
+  for (size_t p = 0; p < np; ++p)
+    table.insert(table.end(), in_split.leaves[p].begin(), in_split.leaves[p].end());
+  for (size_t p = 0; p < np; ++p)
+    table.insert(table.end(), out_split.leaves[p].begin(), out_split.leaves[p].end());
+  const auto dev_table =
+      torch::from_blob(table.data(), {static_cast<int64_t>(table.size())}, torch::kInt64)
+          .to(device);
+  const auto opts = torch::TensorOptions().device(device);
+  at::Tensor in_index = torch::empty({P}, opts.dtype(torch::kInt64));
+  at::Tensor out_index = torch::empty({P}, opts.dtype(torch::kInt64));
+  at::Tensor w;
+  if (weighted)
+    w = torch::empty({P}, opts.dtype(torch::kFloat64));
+  detail::cuda_compose_parts(dev_table, segments, static_cast<int64_t>(np), n_in, n_out,
+                             in_index, out_index, weighted ? &w : nullptr);
+  dc.put(device, in_index, out_index, w);
+  return m;
+}
+#endif
+
+// The host arrays of a map that was composed on a device (from its first device slot).
+void fill_host_arrays(KernelMapEntry &e) {
+  const auto a = e.device->first_slot();
+  AdaptiveKernelMap &m = e.map;
+  const int64_t P = m.kernel_offsets.empty() ? 0 : m.kernel_offsets.back();
+  m.in_index = a.in_index.cpu();
+  m.out_index = a.out_index.cpu();
+  m.kernel_index = torch::empty({P}, torch::kInt64);
+  int64_t *k_p = m.kernel_index.data_ptr<int64_t>();
+  for (int64_t k = 0; k < m.num_kernels; ++k)
+    std::fill(k_p + m.kernel_offsets[k], k_p + m.kernel_offsets[k + 1], k);
+  m.weight = a.weight.defined() ? a.weight.cpu() : torch::ones({P}, torch::kFloat64);
+}
+
+// Least recently used per-part maps within a byte budget. Guarded by the cache mutex.
+struct PartStore {
+  using List = std::list<std::shared_ptr<const PartMap>>;
+  size_t budget = 0;
+  size_t bytes = 0;
+  size_t hits = 0;
+  size_t misses = 0;
+  PartDeviceStore device;
+  List lru; // most recently used first
+  std::unordered_multimap<uint64_t, List::iterator> index;
+
+  std::shared_ptr<const PartMap> find(const PartMap &probe) {
+    const auto range = index.equal_range(probe.hash);
+    for (auto it = range.first; it != range.second; ++it) {
+      const auto &e = *it->second;
+      if (e->signature == probe.signature && e->keys == probe.keys) {
+        lru.splice(lru.begin(), lru, it->second);
+        return e;
+      }
+    }
+    return nullptr;
+  }
+  void evict() {
+    while (bytes > budget && !lru.empty()) {
+      const auto &e = lru.back();
+      const auto range = index.equal_range(e->hash);
+      for (auto it = range.first; it != range.second; ++it)
+        if (it->second->get() == e.get()) {
+          index.erase(it);
+          break;
+        }
+      bytes -= e->bytes();
+      lru.pop_back();
+    }
+  }
+  void insert(std::shared_ptr<const PartMap> e) {
+    if (e->bytes() > budget || find(*e))
+      return;
+    bytes += e->bytes();
+    lru.push_front(std::move(e));
+    index.emplace(lru.front()->hash, lru.begin());
+    evict();
+  }
+  void clear() {
+    std::lock_guard<std::mutex> lock(device.mutex);
+    device.clear();
+    lru.clear();
+    index.clear();
+    bytes = 0;
+  }
+};
+
+
 } // namespace
+
+KernelMapDeviceCache::Arrays KernelMapDeviceCache::get(const AdaptiveKernelMap &map,
+                                                       const at::Device &device,
+                                                       at::ScalarType dtype, bool with_weight) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Slot *slot = nullptr;
+  for (auto &s : slots_)
+    if (s.device == device)
+      slot = &s;
+  if (!slot) {
+    Slot s;
+    s.device = device;
+    // One upload per index array; `to` is a no-op for host maps used on the CPU. A map
+    // composed on another device (no host arrays) is copied from that device's slot.
+    const bool host = map.in_index.defined() || slots_.empty();
+    s.in_index = (host ? map.in_index : slots_.front().in_index).to(device);
+    s.out_index = (host ? map.out_index : slots_.front().out_index).to(device);
+    slots_.push_back(std::move(s));
+    slot = &slots_.back();
+  }
+  Arrays a{slot->in_index, slot->out_index, at::Tensor()};
+  if (with_weight) {
+    for (const auto &w : slot->weights)
+      if (w.first == dtype)
+        a.weight = w.second;
+    if (!a.weight.defined()) {
+      if (map.weight.defined()) {
+        // Same conversion order as before caching (move, then cast) so values are unchanged.
+        a.weight = map.weight.to(device).to(dtype);
+      } else { // composed on a device: cast its float64 weights (or weight 1)
+        for (const auto &w : slots_.front().weights)
+          if (w.first == at::kDouble)
+            a.weight = w.second.to(device).to(dtype);
+        if (!a.weight.defined())
+          a.weight = torch::ones({slot->in_index.numel()},
+                                 torch::TensorOptions().device(device).dtype(dtype));
+      }
+      slot->weights.emplace_back(dtype, a.weight);
+    }
+  }
+  return a;
+}
+
+void KernelMapDeviceCache::put(const at::Device &device, at::Tensor in_index,
+                               at::Tensor out_index, at::Tensor weight) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Slot s;
+  s.device = device;
+  s.in_index = std::move(in_index);
+  s.out_index = std::move(out_index);
+  if (weight.defined())
+    s.weights.emplace_back(at::kDouble, std::move(weight));
+  slots_.push_back(std::move(s));
+}
+
+KernelMapDeviceCache::Arrays KernelMapDeviceCache::first_slot() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  TORCH_CHECK(!slots_.empty(), "kernel map has neither host nor device arrays");
+  const Slot &s = slots_.front();
+  Arrays a{s.in_index, s.out_index, at::Tensor()};
+  for (const auto &w : s.weights)
+    if (w.first == at::kDouble)
+      a.weight = w.second;
+  return a;
+}
+
+namespace detail {
+int64_t &cuda_apply_map_group_bytes() {
+  static int64_t bytes = int64_t(32) << 20;
+  return bytes;
+}
+bool &cuda_part_compose() {
+  static bool on = true;
+  return on;
+}
+int64_t &cuda_part_compose_narrow_limit() {
+  static int64_t limit = 65536;
+  return limit;
+}
+} // namespace detail
 
 struct KernelMapCache::Impl {
   mutable std::mutex mutex;
@@ -213,7 +884,106 @@ struct KernelMapCache::Impl {
   size_t capacity = 64;
   size_t hits = 0;
   size_t misses = 0;
+  PartStore parts;
 };
+
+namespace {
+
+// Builds the entry of a topology that splits into parts, reusing stored part maps; false
+// (nothing built) when part reuse does not apply.
+bool build_from_parts(const std::shared_ptr<const Topology> &in, const AdaptiveKernelConfig &kc,
+                      const at::Device &device, std::mutex &mutex, PartStore &store,
+                      KernelMapEntry &e) {
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (store.budget == 0)
+      return false;
+  }
+  if (!part_reuse_mode(kc) || kc.kernel_size < 1 || kc.kernel_size % 2 == 0 ||
+      kc.output_level_shift > 0)
+    return false;
+  Split in_split = split_parts(*in, (kc.kernel_size - 1) / 2);
+  if (in_split.first_x.empty())
+    return false;
+  in_split.assign(*in);
+  const size_t np = in_split.first_x.size();
+  const std::vector<uint64_t> signature = part_signature(*in, kc);
+  std::vector<PartMap> probe(np);
+  for (size_t p = 0; p < np; ++p) {
+    PartMap &pm = probe[p];
+    pm.signature = signature;
+    pm.keys.reserve(in_split.leaves[p].size());
+    for (int64_t i : in_split.leaves[p]) {
+      Key k = in->keys[i];
+      k.coordinates[0] -= in_split.first_x[p] * (int64_t(1) << k.level);
+      pm.keys.push_back(k);
+    }
+    pm.hash = part_hash(signature, pm.keys);
+  }
+  std::vector<std::shared_ptr<const PartMap>> found(np);
+  size_t hits = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (size_t p = 0; p < np; ++p)
+      if ((found[p] = store.find(probe[p])))
+        ++hits;
+    store.hits += hits;
+    store.misses += np - hits;
+  }
+  e.out_topology = derive_output_topology(in, kc.output_level_shift);
+  Split out_split;
+  out_split.first_x = in_split.first_x;
+  out_split.assign(*e.out_topology);
+  std::vector<std::shared_ptr<const PartMap>> built;
+  // Building parts one by one costs a topology, lookup table and map per part, which only
+  // pays off while the new parts are a small share of the leaves; otherwise one full build,
+  // cut into the new parts' maps for later batches.
+  int64_t new_leaves = 0;
+  for (size_t p = 0; p < np; ++p)
+    if (!found[p])
+      new_leaves += static_cast<int64_t>(in_split.leaves[p].size());
+  if (hits == 0 || 4 * new_leaves > in->size()) {
+    e.map = build_pairs(*e.out_topology, *in, kc);
+    if (extract_parts(e.map, *in, *e.out_topology, in_split, out_split, probe))
+      for (size_t p = 0; p < np; ++p)
+        if (!found[p])
+          built.push_back(std::make_shared<const PartMap>(std::move(probe[p])));
+  } else {
+    for (size_t p = 0; p < np; ++p) {
+      if (!found[p]) {
+        std::shared_ptr<const Topology> part;
+        try {
+          part = Topology::make(in->config, probe[p].keys);
+        } catch (const std::invalid_argument &) {
+          return false; // translated keys out of the representable range: build it whole
+        }
+        auto part_out = derive_output_topology(part, kc.output_level_shift);
+        if (!to_part_map(build_pairs(*part_out, *part, kc), *part_out, probe[p]))
+          return false;
+        found[p] = std::make_shared<const PartMap>(std::move(probe[p]));
+        built.push_back(found[p]);
+      }
+      // The whole topology's outputs inside this part are the part's own outputs, translated.
+      int64_t n_out = 0;
+      for (int64_t c : found[p]->out_counts)
+        n_out += c;
+      if (n_out != static_cast<int64_t>(out_split.leaves[p].size()))
+        return false;
+    }
+#ifdef USE_CUDA
+    if (device.is_cuda() && detail::cuda_part_compose())
+      e.map = compose_parts_device(found, in_split, out_split, device, *e.device, store.device);
+    else
+#endif
+      e.map = compose_parts(found, in_split, out_split);
+  }
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto &pm : built)
+    store.insert(std::move(pm));
+  return true;
+}
+
+} // namespace
 
 KernelMapCache::KernelMapCache() : impl_(new Impl) {}
 KernelMapCache::~KernelMapCache() = default;
@@ -224,22 +994,28 @@ KernelMapCache &KernelMapCache::instance() {
 }
 
 KernelMapEntry KernelMapCache::get_or_build(const AdaptiveSparseTensor &input,
-                                            const AdaptiveKernelConfig &config) {
+                                            const AdaptiveKernelConfig &config, bool host_arrays) {
   const CacheKey key{input.topology()->id, config.kernel_size, static_cast<int>(config.mode),
                      config.output_level_shift};
+  KernelMapEntry e;
+  bool cached = false;
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     auto it = impl_->entries.find(key);
     if (it != impl_->entries.end()) {
       ++impl_->hits;
-      return it->second;
+      e = it->second;
+      cached = true;
+    } else {
+      ++impl_->misses;
     }
-    ++impl_->misses;
   }
-  KernelMapEntry e;
-  e.out_topology = derive_output_topology(input.topology(), config.output_level_shift);
-  e.map = build_pairs(*e.out_topology, *input.topology(), config);
-  {
+  if (!cached) {
+    if (!build_from_parts(input.topology(), config, input.features().device(), impl_->mutex,
+                          impl_->parts, e)) {
+      e.out_topology = derive_output_topology(input.topology(), config.output_level_shift);
+      e.map = build_pairs(*e.out_topology, *input.topology(), config);
+    }
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->entries.emplace(key, e).second)
       impl_->order.push_back(key);
@@ -247,6 +1023,13 @@ KernelMapEntry KernelMapCache::get_or_build(const AdaptiveSparseTensor &input,
       impl_->entries.erase(impl_->order.front());
       impl_->order.pop_front();
     }
+  }
+  if (host_arrays && !e.map.in_index.defined()) {
+    fill_host_arrays(e);
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    auto it = impl_->entries.find(key);
+    if (it != impl_->entries.end() && !it->second.map.in_index.defined())
+      it->second.map = e.map;
   }
   return e;
 }
@@ -257,11 +1040,29 @@ void KernelMapCache::clear() {
   impl_->order.clear();
   impl_->hits = 0;
   impl_->misses = 0;
+  impl_->parts.clear();
+  impl_->parts.hits = 0;
+  impl_->parts.misses = 0;
 }
 
 KernelMapCache::Stats KernelMapCache::stats() const {
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  return {impl_->hits, impl_->misses, impl_->entries.size()};
+  Stats s;
+  s.hits = impl_->hits;
+  s.misses = impl_->misses;
+  s.entries = impl_->entries.size();
+  s.part_hits = impl_->parts.hits;
+  s.part_misses = impl_->parts.misses;
+  s.part_bytes = impl_->parts.bytes;
+  auto &device = impl_->parts.device;
+  std::lock_guard<std::mutex> device_lock(device.mutex);
+  device.prune();
+  s.part_device_bytes = device.bytes;
+  s.part_device_peak_bytes = device.peak_bytes;
+  s.part_device_hits = device.hits;
+  s.part_device_misses = device.misses;
+  s.part_device_groups = device.lru.size();
+  return s;
 }
 
 void KernelMapCache::set_capacity(size_t max_entries) {
@@ -271,6 +1072,24 @@ void KernelMapCache::set_capacity(size_t max_entries) {
     impl_->entries.erase(impl_->order.front());
     impl_->order.pop_front();
   }
+}
+
+void KernelMapCache::set_part_reuse_bytes(size_t max_bytes) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->parts.budget = max_bytes;
+  impl_->parts.evict();
+  auto &device = impl_->parts.device;
+  std::lock_guard<std::mutex> device_lock(device.mutex);
+  device.prune();
+}
+
+void KernelMapCache::set_part_device_bytes(size_t max_bytes) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  auto &device = impl_->parts.device;
+  std::lock_guard<std::mutex> device_lock(device.mutex);
+  device.budget = max_bytes;
+  device.prune();
+  device.trim();
 }
 
 AdaptiveKernelMap build_adaptive_kernel_map(const AdaptiveSparseTensor &input,

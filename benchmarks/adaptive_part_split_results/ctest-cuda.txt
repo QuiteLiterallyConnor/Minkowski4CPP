@@ -1,0 +1,311 @@
+UpdateCTestConfiguration  from :C:/Users/User/Work/mink-build/device-compose-cuda/DartConfiguration.tcl
+Test project C:/Users/User/Work/mink-build/device-compose-cuda
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 1
+    Start 1: adaptive_tests
+
+1: Test command: C:\Users\User\Work\mink-build\device-compose-cuda\adaptive_tests.exe
+1: Working Directory: C:/Users/User/Work/mink-build/device-compose-cuda
+1: Test timeout computed to be: 420
+1: [ PASS ] geometry_voxel_size_halves_per_level
+1: [ PASS ] geometry_anisotropic_voxel_size
+1: [ PASS ] geometry_bounds_and_center
+1: [ PASS ] geometry_half_open_ownership
+1: [ PASS ] geometry_locate_is_consistent_with_bounds
+1: [ PASS ] geometry_parent_child_roundtrip
+1: [ PASS ] geometry_parent_of_negative_coordinates_floors
+1: [ PASS ] geometry_children_tile_parent_exactly
+1: [ PASS ] geometry_keys_at_different_levels_never_collide
+1: [ PASS ] geometry_large_coordinates_roundtrip
+1: [ PASS ] geometry_two_and_four_dimensional
+1: [ PASS ] config_accepts_consistent_resolution
+1: [ PASS ] config_rejects_inconsistent_resolution
+1: [ PASS ] config_rejects_nonpositive_and_unsupported_depth
+1: [ PASS ] config_supports_anisotropic_resolution
+1: [ PASS ] topology_empty_tensor
+1: [ PASS ] topology_from_points_quantizes_to_base_level
+1: [ PASS ] topology_refine_creates_all_children_at_next_level
+1: [ PASS ] topology_refine_region_boundary_is_half_open
+1: [ PASS ] topology_refine_to_target_level_and_idempotence
+1: [ PASS ] topology_refine_beyond_max_depth_throws_or_clamps
+1: [ PASS ] topology_refine_replicate_policy_copies_parent_feature
+1: [ PASS ] topology_refine_split_policy_conserves_extensive_features
+1: [ PASS ] topology_coarsen_mean_sum_max_use_only_occupied_children
+1: [ PASS ] topology_coarsen_only_inside_region
+1: [ PASS ] topology_coarsen_requires_full_region_coverage_of_parent
+1: [ PASS ] topology_refine_then_coarsen_restores_original
+1: [ PASS ] topology_split_then_sum_conserves_total
+1: [ PASS ] topology_repeated_random_modifications_keep_invariants
+1: [ PASS ] topology_refine_by_density_splits_dense_cells_only
+1: [ PASS ] topology_refine_by_density_requires_source_points
+1: [ PASS ] topology_refine_by_variance_splits_high_variance_cells
+1: [ PASS ] topology_revoxelize_from_points_uses_original_points
+1: [ PASS ] topology_version_changes_only_on_modification
+1: [ PASS ] topology_kernel_map_cache_hits_and_invalidation
+1: [ PASS ] topology_addition_requires_matching_topology
+1: [ PASS ] topology_counts_by_level_has_depth_plus_one_entries
+1: [ PASS ] numeric_kernel_map_finds_neighbors_across_refinement_boundary
+1: [ PASS ] numeric_kernel_map_is_free_of_spurious_pairs
+1: [ PASS ] numeric_overlap_weights_partition_each_tap
+1: [ PASS ] numeric_volume_weights_scale_by_leaf_to_output_volume_ratio
+1: [ PASS ] numeric_center_sampled_convolution_matches_hand_computation
+1: [ PASS ] numeric_overlap_convolution_of_constant_field_is_constant_per_tap
+1: [ PASS ] numeric_uniform_equivalence_with_bruteforce_reference
+1: [ PASS ] numeric_uniform_equivalence_with_existing_convolution
+1: [ PASS ] numeric_global_average_pool_is_volume_weighted_by_default
+1: [ PASS ] numeric_local_pool_matches_coarsen_to_target_level
+1: [ PASS ] numeric_interpolation_nearest_picks_containing_leaf
+1: [ PASS ] numeric_interpolation_multilinear_reproduces_constants_across_boundary
+1: [ PASS ] numeric_interpolation_outside_support_is_zero_or_throws
+1: [ PASS ] numeric_resample_to_uniform_preserves_constant_and_volume
+1: [ PASS ] numeric_strided_convolution_has_explicit_output_topology
+1: [ PASS ] numeric_transposed_convolution_restores_reference_topology
+1: [ PASS ] numeric_cpu_cuda_agreement
+1: [ PASS ] gradient_convolution_center_sampled
+1: [ PASS ] gradient_convolution_volume_weighted
+1: [ PASS ] gradient_convolution_overlap_weighted
+1: [ PASS ] gradient_global_average_pool
+1: [ PASS ] gradient_local_pool_all_reductions
+1: [ PASS ] gradient_interpolation_multilinear
+1: [ PASS ] gradient_refine_split_and_coarsen_sum_are_linear
+1: [ PASS ] gradient_topology_decisions_are_not_differentiable
+1: [ PASS ] regression_sparse_tensor_roundtrip
+1: [ PASS ] regression_uniform_convolution_shapes_and_determinism
+1: [ PASS ] regression_uniform_tensor_arithmetic
+1: [ PASS ] regression_adaptive_is_opt_in
+1: [ PASS ] sphere_reaches_target_accuracy
+1: [ PASS ] sphere_known_voxel_counts
+1: [ PASS ] sphere_center_sets_origin
+1: [ PASS ] sphere_invalid_arguments
+1: [ PASS ] sphere_cuda_matches_cpu
+1: [ PASS ] sphere_cuda_errors
+1: [ PASS ] sphere_signed_volume_default_is_unchanged
+1: [ PASS ] sphere_geometric_metric_bounds_shape_error
+1: [ PASS ] sphere_geometric_metric_unreachable_throws
+1: [ PASS ] sphere_geometry_inside_volume_and_misclassified_volume
+1: [ PASS ] sphere_cuda_matches_cpu_geometric_metric
+1: [ PASS ] overlap_descent_matches_grid_scan_on_random_trees
+1: [ PASS ] overlap_descent_handles_empty_and_single_leaf_topologies
+1: [ PASS ] overlap_descent_kernel_map_is_identical_to_scan_oracle
+1: [ PASS ] overlap_descent_multilinear_interpolation_is_identical_to_scan_oracle
+1:     D=3 mode=0 shift=0 pairs=296316 float_tie_changes=8153
+1:     D=3 mode=0 shift=-1 pairs=20953 float_tie_changes=2677
+1:     D=3 mode=0 shift=-2 pairs=20953 float_tie_changes=2677
+1:     D=3 mode=1 shift=0 pairs=296316 float_tie_changes=8153
+1:     D=3 mode=1 shift=-1 pairs=20953 float_tie_changes=2677
+1:     D=3 mode=1 shift=-2 pairs=20953 float_tie_changes=2677
+1:     D=3 mode=2 shift=0 pairs=580711 float_tie_changes=0
+1:     D=3 mode=2 shift=-1 pairs=286590 float_tie_changes=0
+1:     D=3 mode=2 shift=-2 pairs=286590 float_tie_changes=0
+1:     D=2 mode=0 shift=0 pairs=325665 float_tie_changes=8829
+1:     D=2 mode=0 shift=-1 pairs=28173 float_tie_changes=4623
+1:     D=2 mode=0 shift=-2 pairs=26270 float_tie_changes=4562
+1:     D=2 mode=1 shift=0 pairs=325665 float_tie_changes=8829
+1:     D=2 mode=1 shift=-1 pairs=28173 float_tie_changes=4623
+1:     D=2 mode=1 shift=-2 pairs=26270 float_tie_changes=4562
+1:     D=2 mode=2 shift=0 pairs=666774 float_tie_changes=0
+1:     D=2 mode=2 shift=-1 pairs=335285 float_tie_changes=0
+1:     D=2 mode=2 shift=-2 pairs=331854 float_tie_changes=0
+1:     D=4 mode=0 shift=0 pairs=542166 float_tie_changes=10704
+1:     D=4 mode=0 shift=-1 pairs=34144 float_tie_changes=5675
+1:     D=4 mode=0 shift=-2 pairs=34144 float_tie_changes=5675
+1:     D=4 mode=1 shift=0 pairs=542166 float_tie_changes=10704
+1:     D=4 mode=1 shift=-1 pairs=34144 float_tie_changes=5675
+1:     D=4 mode=1 shift=-2 pairs=34144 float_tie_changes=5675
+1:     D=4 mode=2 shift=0 pairs=941620 float_tie_changes=0
+1:     D=4 mode=2 shift=-1 pairs=429480 float_tie_changes=0
+1:     D=4 mode=2 shift=-2 pairs=429480 float_tie_changes=0
+1: [ PASS ] parallel_kmap_matches_serial_oracle
+1: [ PASS ] find_containing_matches_level_probe_oracle
+1: [ PASS ] parallel_interpolate_matches_serial_oracle
+1: [ PASS ] device_kmap_cpu_matches_per_slot_reference
+1: [ PASS ] device_kmap_cuda_matches_per_slot_reference
+1: [ PASS ] device_kmap_cuda_slot_groups_match_reference
+1: [ PASS ] device_kmap_cache_uploads_once_per_device_and_dtype
+1: [ PASS ] device_kmap_empty_map_gives_zeros
+1: [ PASS ] device_kmap_cuda_deterministic_mode_is_bit_reproducible
+1: [ PASS ] integer_taps_translation_invariant
+1: [ PASS ] integer_taps_coarse_to_fine_reads_upper_child
+1: [ PASS ] part_reuse_matches_full_build_modes_shifts_kernels
+1: [ PASS ] part_reuse_needs_a_gap_wider_than_the_kernel_radius
+1: [ PASS ] part_reuse_skips_overlap_weighted
+1: [ PASS ] part_reuse_budget_and_eviction
+1: [ PASS ] part_reuse_convolution_cpu_forward_backward_identical
+1: [ PASS ] part_reuse_convolution_cuda_forward_backward_identical
+1: [ PASS ] part_reuse_device_compose_matches_full_build
+1: [ PASS ] part_reuse_device_compose_then_cpu_convolution
+1: [ PASS ] part_reuse_device_budget_zero_and_tiny_are_exact
+1: [ PASS ] part_reuse_device_budget_evicts_backing_groups
+1: [ PASS ] part_reuse_device_budget_lru_and_duplicate_parts
+1: [ PASS ] part_reuse_device_budget_cross_stream_eviction
+1: [ PASS ] part_reuse_device_budget_mixed_width_partial_host_eviction
+1: [ PASS ] drop_empty_refine_region_keeps_only_occupied_children
+1: [ PASS ] drop_empty_region_equals_default_without_empty_leaves
+1: [ PASS ] drop_empty_density_equals_default_without_empty_leaves
+1: [ PASS ] drop_empty_variance_equals_default_without_empty_leaves
+1: [ PASS ] drop_empty_refine_if_never_creates_point_free_leaves
+1: [ PASS ] drop_empty_split_conserves_sums
+1: [ PASS ] drop_empty_handles_negative_coordinates_and_2d
+1: [ PASS ] drop_empty_gradients_reach_parent_once_per_kept_child
+1: [ PASS ] drop_empty_requires_source_points
+1: [ PASS ] drop_empty_default_is_unchanged
+1: [ PASS ] interp_fallback_default_is_zero_and_unchanged
+1: [ PASS ] interp_fallback_hand_computed_values
+1: [ PASS ] interp_fallback_gradients
+1: [ PASS ] interp_fallback_matches_brute_force_after_drop_empty
+1: [ PASS ] interp_fallback_independent_of_batching
+1: [ PASS ] interp_fallback_2d_negative_coordinates
+1: [ PASS ] interp_fallback_cuda_matches_cpu
+1: [ PASS ] coverage_conv_level_boundaries_match_bruteforce
+1: [ PASS ] coverage_conv_3d_mixed_tree_matches_bruteforce
+1: [ PASS ] coverage_conv_2d_matches_bruteforce
+1: [ PASS ] coverage_conv_4d_matches_bruteforce
+1: [ PASS ] coverage_conv_kernel_size_5_matches_bruteforce
+1: [ PASS ] coverage_conv_kernel_size_1_is_pointwise
+1: [ PASS ] coverage_conv_rejects_even_kernel_and_bad_weight
+1: [ PASS ] coverage_gradient_refine_split_matches_finite_differences
+1: [ PASS ] coverage_gradient_refine_replicate_matches_finite_differences
+1: [ PASS ] coverage_gradient_strided_and_transposed_convolution
+1: [ PASS ] coverage_transposed_convolution_is_the_adjoint_of_the_forward_map
+1: [ PASS ] coverage_gradient_interpolation_nearest
+1: [ PASS ] coverage_gradient_interpolation_multilinear_mixed_tree
+1: [ PASS ] coverage_interpolation_multilinear_continuity_by_level
+1: [ PASS ] coverage_gradient_from_points_mean
+1: [ PASS ] coverage_refine_by_variance_with_differentiable_point_features
+1: [ PASS ] coverage_gradient_max_with_ties_splits_evenly
+1: [ PASS ] coverage_gradient_conv_2d_and_4d
+1: [ PASS ] coverage_empty_tensor_conv_pool_interp
+1: [ PASS ] coverage_large_topology_sort_and_overlap_check
+1: [ PASS ] coverage_large_topology_refine_and_coarsen_roundtrip
+1: [ PASS ] coverage_large_topology_cpu_cuda_agreement
+1: 
+1: 144 passed, 0 failed, 0 skipped
+1/5 Test #1: adaptive_tests ....................   Passed   67.79 sec
+test 2
+    Start 2: adaptive_split_tests
+
+2: Test command: C:\Users\User\Work\mink-build\device-compose-cuda\adaptive_split_tests.exe
+2: Working Directory: C:/Users/User/Work/mink-build/device-compose-cuda
+2: Test timeout computed to be: 420
+2: [ PASS ] part_split_empty_and_singleton
+2: [ PASS ] part_split_level_resets_and_negative_floor
+2: [ PASS ] part_split_kernel_radius_boundary
+2: [ PASS ] part_split_repeated_cells_and_single_level
+2: [ PASS ] part_split_extreme_coordinates_and_sparse_levels
+2: [ PASS ] part_split_randomized_differential
+2: 
+2: 6 passed, 0 failed, 0 skipped
+2/5 Test #2: adaptive_split_tests ..............   Passed    0.18 sec
+test 3
+    Start 3: adaptive_vs_uniform_bench_smoke
+
+3: Test command: C:\Users\User\Work\mink-build\device-compose-cuda\adaptive_vs_uniform_bench.exe "--datasets" "clustered,shell" "--methods" "u_coarse,u_fine,u_matched,a_roi,a_dens16,a_var" "--points" "3000" "--ml-queries" "200" "--warmup" "0" "--reps" "1"
+3: Working Directory: C:/Users/User/Work/mink-build/device-compose-cuda
+3: Test timeout computed to be: 420
+3: {"kind":"case","dataset":"clustered","method":"u_coarse","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"12 Gaussian clusters (sigma 2/4/8) = 90%, uniform background 10%","dataset_load_ms":28.787,"build_ms":{"med":0.3688,"min":0.3688,"max":0.3688},"voxels":709,"levels":[709],"voxel_size":8.0,"matched_target":1024,"covered_volume":363008.0,"feature_bytes":45376,"coord_bytes_adaptive":19852,"coord_bytes_mink":11344,"accuracy":{"test_points":300,"ref_std":0.6932618056885522,"coverage":0.8266666666666667,"rmse_nearest_all":0.5192889984051806,"rmse_nearest_covered":0.46663458155926546,"nrmse_nearest_all":0.7490517927630808,"interp_nearest_ms":0.1229,"interp_multilinear_ms":0.2326,"ml_queries":200,"rmse_multilinear_all":0.45820226133839537},"adaptive_engine":{"first_conv_ms":5.8148,"kmap_pairs":6577,"kmap_bytes":210464,"avg_neighbors":9.276445698166432,"kmap_cold_ms":{"med":0.9866,"min":0.9866,"max":0.9866},"fwd_ms":{"med":1.4406,"min":1.4406,"max":1.4406},"fwd_bwd_ms":{"med":10.4771,"min":10.4771,"max":10.4771}},"minkowski_engine":{"mink_first_conv_ms":1.9919,"mink_insert_ms":{"med":0.0905,"min":0.0905,"max":0.0905},"mink_cold_conv_ms":{"med":1.4618,"min":1.4618,"max":1.4618},"mink_fwd_ms":{"med":0.6564,"min":0.6564,"max":0.6564},"mink_fwd_bwd_ms":{"med":2.3193,"min":2.3193,"max":2.3193},"mink_kmap_est_ms":0.7149},"peak_ram_mb":323.6640625}
+3: {"kind":"case","dataset":"clustered","method":"u_fine","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"12 Gaussian clusters (sigma 2/4/8) = 90%, uniform background 10%","dataset_load_ms":28.787,"build_ms":{"med":1.2304,"min":1.2304,"max":1.2304},"voxels":2667,"levels":[2667],"voxel_size":0.5,"matched_target":1024,"covered_volume":333.375,"feature_bytes":170688,"coord_bytes_adaptive":74676,"coord_bytes_mink":42672,"accuracy":{"test_points":300,"ref_std":0.6932618056885522,"coverage":0.016666666666666666,"rmse_nearest_all":0.6883288751655138,"rmse_nearest_covered":0.06777586958478493,"nrmse_nearest_all":0.992884462287463,"interp_nearest_ms":0.1862,"interp_multilinear_ms":0.0603,"ml_queries":200,"rmse_multilinear_all":0.6863091401480115},"adaptive_engine":{"first_conv_ms":4.0042,"kmap_pairs":4073,"kmap_bytes":130336,"avg_neighbors":1.5271841019872516,"kmap_cold_ms":{"med":3.0108,"min":3.0108,"max":3.0108},"fwd_ms":{"med":0.7659,"min":0.7659,"max":0.7659},"fwd_bwd_ms":{"med":4.1484,"min":4.1484,"max":4.1484}},"minkowski_engine":{"mink_first_conv_ms":3.2594,"mink_insert_ms":{"med":0.2471,"min":0.2471,"max":0.2471},"mink_cold_conv_ms":{"med":3.1692,"min":3.1692,"max":3.1692},"mink_fwd_ms":{"med":0.6542,"min":0.6542,"max":0.6542},"mink_fwd_bwd_ms":{"med":2.3488,"min":2.3488,"max":2.3488},"mink_kmap_est_ms":2.2679},"peak_ram_mb":328.05078125}
+3: {"kind":"case","dataset":"clustered","method":"u_matched","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"12 Gaussian clusters (sigma 2/4/8) = 90%, uniform background 10%","dataset_load_ms":28.787,"build_ms":{"med":6.7342,"min":6.7342,"max":6.7342},"voxels":1024,"levels":[1024],"voxel_size":5.419314416767647,"matched_target":1024,"covered_volume":162979.50795824468,"feature_bytes":65536,"coord_bytes_adaptive":28672,"coord_bytes_mink":16384,"accuracy":{"test_points":300,"ref_std":0.6932618056885522,"coverage":0.75,"rmse_nearest_all":0.4862199698014599,"rmse_nearest_covered":0.3865489638495727,"nrmse_nearest_all":0.7013511574008364,"interp_nearest_ms":0.1025,"interp_multilinear_ms":0.1787,"ml_queries":200,"rmse_multilinear_all":0.42063882950141973},"adaptive_engine":{"first_conv_ms":2.5524,"kmap_pairs":9906,"kmap_bytes":316992,"avg_neighbors":9.673828125,"kmap_cold_ms":{"med":1.7151,"min":1.7151,"max":1.7151},"fwd_ms":{"med":1.0464,"min":1.0464,"max":1.0464},"fwd_bwd_ms":{"med":5.11,"min":5.11,"max":5.11}},"minkowski_engine":{"mink_first_conv_ms":1.8706,"mink_insert_ms":{"med":0.1191,"min":0.1191,"max":0.1191},"mink_cold_conv_ms":{"med":1.9255,"min":1.9255,"max":1.9255},"mink_fwd_ms":{"med":0.8474,"min":0.8474,"max":0.8474},"mink_fwd_bwd_ms":{"med":2.7392,"min":2.7392,"max":2.7392},"mink_kmap_est_ms":0.959},"peak_ram_mb":329.16796875}
+3: {"kind":"case","dataset":"clustered","method":"a_roi","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"12 Gaussian clusters (sigma 2/4/8) = 90%, uniform background 10%","dataset_load_ms":28.787,"build_ms":{"med":120.4563,"min":120.4563,"max":120.4563},"voxels":54490,"levels":[691,39,0,0,53760],"matched_target":1024,"roi":[[148.0,156.0,60.0],[180.0,188.0,92.0]],"coarsen_all_ms":{"med":12.6844,"min":12.6844,"max":12.6844},"covered_volume":363008.0,"feature_bytes":3487360,"coord_bytes_adaptive":1525720,"coord_bytes_mink":871840,"accuracy":{"test_points":300,"ref_std":0.6932618056885522,"coverage":0.8266666666666667,"rmse_nearest_all":0.5184372178667553,"rmse_nearest_covered":0.46548746567080274,"nrmse_nearest_all":0.7478231363861738,"interp_nearest_ms":0.1224,"interp_multilinear_ms":0.3891,"ml_queries":200,"rmse_multilinear_all":0.4561608195204263},"adaptive_engine":{"first_conv_ms":117.2572,"kmap_pairs":1371802,"kmap_bytes":43897664,"avg_neighbors":25.175298219856856,"kmap_cold_ms":{"med":64.6493,"min":64.6493,"max":64.6493},"fwd_ms":{"med":67.4463,"min":67.4463,"max":67.4463},"fwd_bwd_ms":{"med":504.3346,"min":504.3346,"max":504.3346}},"peak_ram_mb":677.69140625}
+3: {"kind":"case","dataset":"clustered","method":"a_dens16","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"12 Gaussian clusters (sigma 2/4/8) = 90%, uniform background 10%","dataset_load_ms":28.787,"build_ms":{"med":2.5232,"min":2.5232,"max":2.5232},"voxels":1024,"levels":[681,207,136,0,0],"matched_target":1024,"refine_threshold":16.0,"coarsen_all_ms":{"med":0.3019,"min":0.3019,"max":0.3019},"covered_volume":363008.0,"feature_bytes":65536,"coord_bytes_adaptive":28672,"coord_bytes_mink":16384,"accuracy":{"test_points":300,"ref_std":0.6932618056885522,"coverage":0.8266666666666667,"rmse_nearest_all":0.4847235417360976,"rmse_nearest_covered":0.41924575577271994,"nrmse_nearest_all":0.6991926250064605,"interp_nearest_ms":0.1088,"interp_multilinear_ms":0.4129,"ml_queries":200,"rmse_multilinear_all":0.40627636221383956},"adaptive_engine":{"first_conv_ms":3.4922,"kmap_pairs":13897,"kmap_bytes":444704,"avg_neighbors":13.5712890625,"kmap_cold_ms":{"med":1.2735,"min":1.2735,"max":1.2735},"fwd_ms":{"med":1.3128,"min":1.3128,"max":1.3128},"fwd_bwd_ms":{"med":8.6821,"min":8.6821,"max":8.6821}},"peak_ram_mb":677.69140625}
+3: {"kind":"case","dataset":"clustered","method":"a_var","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"12 Gaussian clusters (sigma 2/4/8) = 90%, uniform background 10%","dataset_load_ms":28.787,"build_ms":{"med":12.8351,"min":12.8351,"max":12.8351},"voxels":4839,"levels":[462,1713,2025,631,8],"matched_target":1024,"refine_threshold":0.022808483497967255,"coarsen_all_ms":{"med":3.2291,"min":3.2291,"max":3.2291},"covered_volume":363008.0,"feature_bytes":309696,"coord_bytes_adaptive":135492,"coord_bytes_mink":77424,"accuracy":{"test_points":300,"ref_std":0.6932618056885522,"coverage":0.8266666666666667,"rmse_nearest_all":0.4813427790516871,"rmse_nearest_covered":0.4145071142016501,"nrmse_nearest_all":0.6943160218867305,"interp_nearest_ms":0.1492,"interp_multilinear_ms":0.5301,"ml_queries":200,"rmse_multilinear_all":0.3797320506437697},"adaptive_engine":{"first_conv_ms":11.693,"kmap_pairs":105898,"kmap_bytes":3388736,"avg_neighbors":21.88427361025005,"kmap_cold_ms":{"med":4.8396,"min":4.8396,"max":4.8396},"fwd_ms":{"med":5.9727,"min":5.9727,"max":5.9727},"fwd_bwd_ms":{"med":53.4453,"min":53.4453,"max":53.4453}},"peak_ram_mb":677.69140625}
+3: {"kind":"case","dataset":"shell","method":"u_coarse","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"sphere surface r=100 centre 128, radial noise sigma 0.5","dataset_load_ms":2.8377,"build_ms":{"med":0.708,"min":0.708,"max":0.708},"voxels":1581,"levels":[1581],"voxel_size":8.0,"matched_target":1581,"covered_volume":809472.0,"feature_bytes":101184,"coord_bytes_adaptive":44268,"coord_bytes_mink":25296,"accuracy":{"test_points":300,"ref_std":0.6967309972779246,"coverage":0.6733333333333333,"rmse_nearest_all":0.574100076255149,"rmse_nearest_covered":0.5096160203719453,"nrmse_nearest_all":0.8239910072870514,"interp_nearest_ms":0.0926,"interp_multilinear_ms":0.1441,"ml_queries":200,"rmse_multilinear_all":0.5516548327198599},"adaptive_engine":{"first_conv_ms":2.9638,"kmap_pairs":13541,"kmap_bytes":433312,"avg_neighbors":8.56483238456673,"kmap_cold_ms":{"med":2.0096,"min":2.0096,"max":2.0096},"fwd_ms":{"med":1.2965,"min":1.2965,"max":1.2965},"fwd_bwd_ms":{"med":7.0064,"min":7.0064,"max":7.0064}},"minkowski_engine":{"mink_first_conv_ms":3.1631,"mink_insert_ms":{"med":0.1796,"min":0.1796,"max":0.1796},"mink_cold_conv_ms":{"med":4.2071,"min":4.2071,"max":4.2071},"mink_fwd_ms":{"med":1.5064,"min":1.5064,"max":1.5064},"mink_fwd_bwd_ms":{"med":3.2195,"min":3.2195,"max":3.2195},"mink_kmap_est_ms":2.5210999999999997},"peak_ram_mb":677.69140625}
+3: {"kind":"case","dataset":"shell","method":"u_fine","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"sphere surface r=100 centre 128, radial noise sigma 0.5","dataset_load_ms":2.8377,"build_ms":{"med":1.2521,"min":1.2521,"max":1.2521},"voxels":2695,"levels":[2695],"voxel_size":0.5,"matched_target":1581,"covered_volume":336.875,"feature_bytes":172480,"coord_bytes_adaptive":75460,"coord_bytes_mink":43120,"accuracy":{"test_points":300,"ref_std":0.6967309972779246,"coverage":0.0,"rmse_nearest_all":0.6983194093716001,"rmse_nearest_covered":null,"nrmse_nearest_all":1.0022798068406333,"interp_nearest_ms":0.1245,"interp_multilinear_ms":0.0178,"ml_queries":200,"rmse_multilinear_all":0.6943588606567772},"adaptive_engine":{"first_conv_ms":2.9126,"kmap_pairs":2771,"kmap_bytes":88672,"avg_neighbors":1.0282003710575138,"kmap_cold_ms":{"med":2.1193,"min":2.1193,"max":2.1193},"fwd_ms":{"med":0.8619,"min":0.8619,"max":0.8619},"fwd_bwd_ms":{"med":4.3828,"min":4.3828,"max":4.3828}},"minkowski_engine":{"mink_first_conv_ms":3.3918,"mink_insert_ms":{"med":0.2566,"min":0.2566,"max":0.2566},"mink_cold_conv_ms":{"med":3.2625,"min":3.2625,"max":3.2625},"mink_fwd_ms":{"med":0.4184,"min":0.4184,"max":0.4184},"mink_fwd_bwd_ms":{"med":1.7493,"min":1.7493,"max":1.7493},"mink_kmap_est_ms":2.5875},"peak_ram_mb":677.69140625}
+3: {"kind":"case","dataset":"shell","method":"u_matched","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"sphere surface r=100 centre 128, radial noise sigma 0.5","dataset_load_ms":2.8377,"build_ms":{"med":8.4036,"min":8.4036,"max":8.4036},"voxels":1581,"levels":[1581],"voxel_size":7.8206317674625385,"matched_target":1581,"covered_volume":756236.0615322998,"feature_bytes":101184,"coord_bytes_adaptive":44268,"coord_bytes_mink":25296,"accuracy":{"test_points":300,"ref_std":0.6967309972779246,"coverage":0.6566666666666666,"rmse_nearest_all":0.6032288912253685,"rmse_nearest_covered":0.5472226349865611,"nrmse_nearest_all":0.8657988428563365,"interp_nearest_ms":0.1303,"interp_multilinear_ms":0.2074,"ml_queries":200,"rmse_multilinear_all":0.549387357635787},"adaptive_engine":{"first_conv_ms":6.9611,"kmap_pairs":13181,"kmap_bytes":421792,"avg_neighbors":8.337128399746996,"kmap_cold_ms":{"med":4.5447,"min":4.5447,"max":4.5447},"fwd_ms":{"med":3.1187,"min":3.1187,"max":3.1187},"fwd_bwd_ms":{"med":15.5025,"min":15.5025,"max":15.5025}},"minkowski_engine":{"mink_first_conv_ms":4.2001,"mink_insert_ms":{"med":0.2767,"min":0.2767,"max":0.2767},"mink_cold_conv_ms":{"med":3.543,"min":3.543,"max":3.543},"mink_fwd_ms":{"med":7.1324,"min":7.1324,"max":7.1324},"mink_fwd_bwd_ms":{"med":7.6651,"min":7.6651,"max":7.6651},"mink_kmap_est_ms":-3.8660999999999994},"peak_ram_mb":677.69140625}
+3: {"kind":"case","dataset":"shell","method":"a_roi","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"sphere surface r=100 centre 128, radial noise sigma 0.5","dataset_load_ms":2.8377,"build_ms":{"med":69.7308,"min":69.7308,"max":69.7308},"voxels":66156,"levels":[1554,90,0,0,64512],"matched_target":1581,"roi":[[68.0,156.0,36.0],[100.0,188.0,68.0]],"coarsen_all_ms":{"med":29.7755,"min":29.7755,"max":29.7755},"covered_volume":809472.0,"feature_bytes":4233984,"coord_bytes_adaptive":1852368,"coord_bytes_mink":1058496,"accuracy":{"test_points":300,"ref_std":0.6967309972779246,"coverage":0.6733333333333333,"rmse_nearest_all":0.574100076255149,"rmse_nearest_covered":0.5096160203719453,"nrmse_nearest_all":0.8239910072870514,"interp_nearest_ms":0.2296,"interp_multilinear_ms":0.2999,"ml_queries":200,"rmse_multilinear_all":0.551846710119025},"adaptive_engine":{"first_conv_ms":148.3842,"kmap_pairs":1614350,"kmap_bytes":51659200,"avg_neighbors":24.402170627002842,"kmap_cold_ms":{"med":53.1515,"min":53.1515,"max":53.1515},"fwd_ms":{"med":71.0173,"min":71.0173,"max":71.0173},"fwd_bwd_ms":{"med":335.5883,"min":335.5883,"max":335.5883}},"peak_ram_mb":750.42578125}
+3: {"kind":"case","dataset":"shell","method":"a_dens16","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"sphere surface r=100 centre 128, radial noise sigma 0.5","dataset_load_ms":2.8377,"build_ms":{"med":1.706,"min":1.706,"max":1.706},"voxels":1581,"levels":[1581,0,0,0,0],"matched_target":1581,"refine_threshold":16.0,"coarsen_all_ms":{"med":0.1308,"min":0.1308,"max":0.1308},"covered_volume":809472.0,"feature_bytes":101184,"coord_bytes_adaptive":44268,"coord_bytes_mink":25296,"accuracy":{"test_points":300,"ref_std":0.6967309972779246,"coverage":0.6733333333333333,"rmse_nearest_all":0.574100076255149,"rmse_nearest_covered":0.5096160203719453,"nrmse_nearest_all":0.8239910072870514,"interp_nearest_ms":0.0655,"interp_multilinear_ms":0.1252,"ml_queries":200,"rmse_multilinear_all":0.5516548327198599},"adaptive_engine":{"first_conv_ms":3.1555,"kmap_pairs":13541,"kmap_bytes":433312,"avg_neighbors":8.56483238456673,"kmap_cold_ms":{"med":1.0536,"min":1.0536,"max":1.0536},"fwd_ms":{"med":0.7574,"min":0.7574,"max":0.7574},"fwd_bwd_ms":{"med":4.1349,"min":4.1349,"max":4.1349}},"peak_ram_mb":750.42578125}
+3: {"kind":"case","dataset":"shell","method":"a_var","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"sphere surface r=100 centre 128, radial noise sigma 0.5","dataset_load_ms":2.8377,"build_ms":{"med":13.1281,"min":13.1281,"max":13.1281},"voxels":6397,"levels":[1035,4238,1028,96,0],"matched_target":1581,"refine_threshold":0.02489036294723833,"coarsen_all_ms":{"med":3.0632,"min":3.0632,"max":3.0632},"covered_volume":809472.0,"feature_bytes":409408,"coord_bytes_adaptive":179116,"coord_bytes_mink":102352,"accuracy":{"test_points":300,"ref_std":0.6967309972779246,"coverage":0.6733333333333333,"rmse_nearest_all":0.5678207828331581,"rmse_nearest_covered":0.49905840934126433,"nrmse_nearest_all":0.814978499667147,"interp_nearest_ms":0.1116,"interp_multilinear_ms":0.2707,"ml_queries":200,"rmse_multilinear_all":0.5375941174320356},"adaptive_engine":{"first_conv_ms":10.6032,"kmap_pairs":94121,"kmap_bytes":3011872,"avg_neighbors":14.713303110833204,"kmap_cold_ms":{"med":4.0762,"min":4.0762,"max":4.0762},"fwd_ms":{"med":3.3697,"min":3.3697,"max":3.3697},"fwd_bwd_ms":{"med":21.8061,"min":21.8061,"max":21.8061}},"peak_ram_mb":750.42578125}
+3/5 Test #3: adaptive_vs_uniform_bench_smoke ...   Passed    3.38 sec
+test 4
+    Start 4: gaussian_tests
+
+4: Test command: C:\Users\User\Work\mink-build\device-compose-cuda\gaussian_tests.exe
+4: Working Directory: C:/Users/User/Work/mink-build/device-compose-cuda
+4: Test timeout computed to be: 420
+4: [ PASS ] gaussian3d_identity_covariance_and_density
+4: [ PASS ] gaussian3d_anisotropic_rotated_covariance_is_symmetric
+4: [ PASS ] gaussian3d_rejects_invalid_parameters
+4: [ PASS ] gaussian3d_overlap_sampling_and_bounds
+4: [ PASS ] gaussian_tensor_covariance_and_shape
+4: [ PASS ] gaussian_tensor_select_remove_and_filter
+4: [ PASS ] gaussian_tensor_concat_clone_and_empty
+4: [ PASS ] gaussian_tensor_transform_and_gradients
+4: [ PASS ] gaussian_optimizer_reduces_rgb_reconstruction_loss
+4: [ PASS ] gaussian_cuda_kernels_match_tensor_reference
+4: [ PASS ] ply_compressed_and_uncompressed_are_both_detected
+4: [ PASS ] ply_loads_expected_layout
+4: [ PASS ] ply_values_are_valid
+4: [ PASS ] ply_covariances_are_symmetric_positive_semidefinite
+4: [ PASS ] ply_filter_opacity_and_bounds
+4: [ PASS ] ply_select_remove_partition
+4: [ PASS ] ply_transform_round_trip_restores_scene
+4: [ PASS ] ply_optimizer_reduces_color_loss
+4: [ PASS ] ply_rejects_bad_files
+4: [ PASS ] ply_cuda_transform_matches_cpu
+4: [ PASS ] gaussian_render_single_gaussian_at_center
+4: [ PASS ] gaussian_render_empty_scene_returns_background
+4: [ PASS ] gaussian_render_near_gaussian_occludes_far
+4: [ PASS ] gaussian_sh_degree_zero_and_degree_one
+4: [ PASS ] gaussian_render_gradients_are_finite_and_nonzero
+4: [ PASS ] gaussian_render_color_gradient_matches_finite_difference
+4: [ PASS ] gaussian_model_tensor_round_trip
+4: [ PASS ] gaussian_ply_model_save_load_round_trip
+4: [ PASS ] gaussian_ply_models_load_with_sh_degree_three
+4: [ PASS ] gaussian_ply_scene_renders_and_trains
+4: [ PASS ] gaussian_trainer_reduces_loss_on_synthetic_scene
+4: [ PASS ] gaussian_trainer_densify_and_prune
+4: [ PASS ] gaussian_trainer_reset_opacity_caps_opacity
+4: [ PASS ] gaussian_cuda_rasterizer_matches_reference_forward_and_backward
+4: [ PASS ] gaussian_render_cuda_matches_cpu
+4:          sparse: max |kernel - libtorch| image 1.78814e-07, alpha 1.19209e-07, depth 7.15256e-07
+4:          sparse grad positions: max 102.065, err 2.88486e-05
+4:          sparse grad rotations: max 5.6998, err 1.41561e-06
+4:          sparse grad scales: max 122.798, err 6.10352e-05
+4:          sparse grad opacities: max 7.29932, err 1.66893e-06
+4:          sparse grad colors: max 5.76701, err 9.53674e-07
+4:          sparse grad background: max 32.8521, err 5.72205e-06
+4: [ PASS ] gaussian_cpu_raster_matches_libtorch_sparse
+4:          saturated: max |kernel - libtorch| image 0.000311911, alpha 0.000432789, depth 0.00147748
+4:          saturated grad positions: max 35.7298, err 0.0116951
+4:          saturated grad rotations: max 10.0318, err 0.00212514
+4:          saturated grad scales: max 41.5437, err 0.0142708
+4:          saturated grad opacities: max 8.58684, err 0.00571509
+4:          saturated grad colors: max 19.1388, err 0.00165981
+4:          saturated grad background: max 36.3864, err 0.00205421
+4: [ PASS ] gaussian_cpu_raster_matches_libtorch_saturated
+4: [ PASS ] gaussian_cpu_raster_matches_libtorch_other_tile_size
+4: [ PASS ] gaussian_cpu_raster_is_deterministic_across_threads
+4: [ PASS ] gaussian_cpu_raster_empty_and_culled_scenes
+4:          sparse positions: max |grad| 95.5891, max err 1.71661e-05
+4:          sparse rotations: max |grad| 3.34321, max err 6.55651e-07
+4:          sparse scales: max |grad| 97.5649, max err 4.95911e-05
+4:          sparse opacities: max |grad| 5.0512, max err 9.53674e-07
+4:          sparse colors: max |grad| 4.1292, max err 7.15256e-07
+4:          sparse background: max |grad| 27.8133, max err 1.90735e-06
+4: [ PASS ] gaussian_cuda_backward_sparse_hits_match_reference
+4:          saturated positions: max |grad| 27.2863, max err 0.0217045
+4:          saturated rotations: max |grad| 18.454, max err 0.0124226
+4:          saturated scales: max |grad| 32.7323, max err 0.0204147
+4:          saturated opacities: max |grad| 14.1861, max err 0.0100843
+4:          saturated colors: max |grad| 16.7436, max err 0.00174667
+4:          saturated background: max |grad| 44.7248, max err 0.00726509
+4: [ PASS ] gaussian_cuda_backward_saturated_tiles_match_reference
+4: 
+4: 42 passed, 0 failed, 0 skipped
+4/5 Test #4: gaussian_tests ....................   Passed    5.34 sec
+test 5
+    Start 5: test_framework_contract
+
+5: Test command: C:\Users\User\Work\mink-build\device-compose-cuda\tests\utils\test_framework_contract.exe
+5: Working Directory: C:/Users/User/Work/mink-build/device-compose-cuda/tests/utils
+5: Test timeout computed to be: 420
+5: 9 test-framework contract cases passed
+5/5 Test #5: test_framework_contract ...........   Passed    0.03 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =  77.02 sec

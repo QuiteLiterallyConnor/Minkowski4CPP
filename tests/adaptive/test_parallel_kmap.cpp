@@ -1,6 +1,7 @@
 // Multi-threaded kernel-map construction, the node-table find_containing and the hashed
 // derive_output_topology must reproduce the original serial algorithms exactly: same pairs in
 // the same order, same output leaves, same containing leaf for every point.
+#include <iostream>
 #include <limits>
 #include <map>
 #include <random>
@@ -72,6 +73,42 @@ int64_t oracle_containing(const Topology& t, const std::map<std::vector<int64_t>
     return -1;
 }
 
+// CenterSampled / VolumeWeighted taps: the leaf containing the centre of output-level cell
+// `cell`, located on the integer grid at every present level (ancestor at coarser levels,
+// the child whose lower corner is the centre at finer ones).
+int64_t oracle_containing_center(const Topology& t,
+                                 const std::map<std::vector<int64_t>, int64_t>& idx,
+                                 const Key& cell) {
+    for (uint32_t l : t.present_levels) {
+        std::vector<int64_t> key{static_cast<int64_t>(l)};
+        for (int d = 0; d < t.D; ++d) {
+            const int64_t c = cell.coordinates[d];
+            if (l <= cell.level) {
+                int64_t a = c;
+                for (uint32_t i = l; i < cell.level; ++i) a = a >= 0 ? a / 2 : -((-a + 1) / 2);
+                key.push_back(a);
+            } else {
+                const int64_t m = int64_t(1) << (l - cell.level);
+                key.push_back(c * m + m / 2);
+            }
+        }
+        auto it = idx.find(key);
+        if (it != idx.end()) return it->second;
+    }
+    return -1;
+}
+
+// True if p lies in leaf j's closed box, widened by a relative 1e-9 (rounding of t).
+bool closed_contains(const Topology& t, int64_t j, const DVec& p) {
+    DVec lo, hi;
+    t.bounds(t.keys[j], lo, hi);
+    for (int d = 0; d < t.D; ++d) {
+        const double e = 1e-9 * (hi[d] - lo[d]);
+        if (p[d] < lo[d] - e || p[d] > hi[d] + e) return false;
+    }
+    return true;
+}
+
 std::map<std::vector<int64_t>, int64_t> key_index(const Topology& t) {
     std::map<std::vector<int64_t>, int64_t> idx;
     for (int64_t i = 0; i < t.size(); ++i) {
@@ -106,7 +143,11 @@ struct Pairs {
     std::vector<int64_t> offsets;
 };
 
-Pairs oracle_pairs(const Topology& out, const Topology& in, const AdaptiveKernelConfig& kc) {
+// `float_ties` (optional) counts CenterSampled/VolumeWeighted taps where the integer tap
+// differs from the float point location of the original build_pairs; `bad_ties` those where
+// the two answers are not both leaves touching the tap point (a real disagreement).
+Pairs oracle_pairs(const Topology& out, const Topology& in, const AdaptiveKernelConfig& kc,
+                   int64_t* float_ties = nullptr, int64_t* bad_ties = nullptr) {
     const int D = out.D, K = kc.kernel_size, r = (K - 1) / 2;
     int64_t nk = 1;
     for (int d = 0; d < D; ++d) nk *= K;
@@ -124,9 +165,11 @@ Pairs oracle_pairs(const Topology& out, const Topology& in, const AdaptiveKernel
         }
         for (int64_t k = 0; k < nk; ++k) {
             DVec t{};
+            Key cell = out.keys[o];
             int64_t rem = k;
             for (int d = D - 1; d >= 0; --d) {
                 t[d] = c[d] + (static_cast<int>(rem % K) - r) * s[d];
+                cell.coordinates[d] += static_cast<int>(rem % K) - r;
                 rem /= K;
             }
             if (kc.mode == AdaptiveConvMode::OverlapWeighted) {
@@ -139,7 +182,15 @@ Pairs oracle_pairs(const Topology& out, const Topology& in, const AdaptiveKernel
                     per_k[k].emplace_back(o, j, ov / Vo);
                 });
             } else {
-                const int64_t j = oracle_containing(in, idx, t);
+                const int64_t j = oracle_containing_center(in, idx, cell);
+                const int64_t jf = oracle_containing(in, idx, t);
+                if (j != jf && float_ties) {
+                    ++*float_ties;
+                    // A tie: the float answer is empty or a leaf touching t, and so is ours.
+                    if ((jf >= 0 && !closed_contains(in, jf, t)) ||
+                        (j >= 0 && !closed_contains(in, j, t)) || (j < 0 && jf < 0))
+                        ++*bad_ties;
+                }
                 if (j < 0) continue;
                 per_k[k].emplace_back(o, j,
                                       kc.mode == AdaptiveConvMode::VolumeWeighted
@@ -196,7 +247,14 @@ TEST(parallel_kmap_matches_serial_oracle) {
                 // Output leaves equal the original set-based derivation.
                 const auto expect_keys = shift == 0 ? topo->keys : oracle_output_keys(*topo, shift);
                 CHECK(e.out_topology->keys == expect_keys);
-                const Pairs p = oracle_pairs(*e.out_topology, *topo, kc);
+                int64_t ties = 0, bad = 0;
+                const Pairs p = oracle_pairs(*e.out_topology, *topo, kc, &ties, &bad);
+                // Non-binary voxel sizes and origins: taps on corners shared by finer leaves
+                // differ from the old float point location only by which touching leaf won.
+                CHECK_EQ(bad, int64_t(0));
+                std::cout << "    D=" << s.D << " mode=" << static_cast<int>(mode)
+                          << " shift=" << shift << " pairs=" << p.in.size()
+                          << " float_tie_changes=" << ties << std::endl;
                 CHECK(e.map.kernel_offsets == p.offsets);
                 CHECK(to_vec(e.map.in_index) == p.in);
                 CHECK(to_vec(e.map.out_index) == p.out);

@@ -1,0 +1,98 @@
+[
+  {
+    "workload": "center",
+    "metric": "kmap_batch_first_epoch_ms",
+    "before": 148.3785,
+    "after": 137.4425,
+    "change_percent": -7.370340042526379,
+    "faster": 6,
+    "before_range": [
+      143.499,
+      177.256
+    ],
+    "after_range": [
+      131.163,
+      154.371
+    ]
+  },
+  {
+    "workload": "center",
+    "metric": "kmap_batch_later_epochs_ms",
+    "before": 23.7925,
+    "after": 19.2345,
+    "change_percent": -19.157297467689393,
+    "faster": 6,
+    "before_range": [
+      20.948,
+      33.564
+    ],
+    "after_range": [
+      18.145,
+      20.577
+    ]
+  },
+  {
+    "workload": "center",
+    "metric": "peak_working_set_mb",
+    "before": 1894.4845,
+    "after": 1895.1109999999999,
+    "change_percent": 0.033069682016395596,
+    "faster": 2,
+    "before_range": [
+      1891.547,
+      1896.73
+    ],
+    "after_range": [
+      1893.297,
+      1897.996
+    ]
+  },
+  {
+    "workload": "volume",
+    "metric": "kmap_batch_first_epoch_ms",
+    "before": 170.64350000000002,
+    "after": 167.153,
+    "change_percent": -2.0454925033769333,
+    "faster": 4,
+    "before_range": [
+      139.911,
+      195.027
+    ],
+    "after_range": [
+      147.307,
+      175.424
+    ]
+  },
+  {
+    "workload": "volume",
+    "metric": "kmap_batch_later_epochs_ms",
+    "before": 25.0485,
+    "after": 22.0835,
+    "change_percent": -11.83703614986925,
+    "faster": 5,
+    "before_range": [
+      20.992,
+      29.716
+    ],
+    "after_range": [
+      20.804,
+      29.182
+    ]
+  },
+  {
+    "workload": "volume",
+    "metric": "peak_working_set_mb",
+    "before": 1935.078,
+    "after": 1934.7325,
+    "change_percent": -0.017854577438214392,
+    "faster": 2,
+    "before_range": [
+      1933.102,
+      1936.75
+    ],
+    "after_range": [
+      1933.219,
+      1938.199
+    ]
+  }
+]

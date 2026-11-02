@@ -117,6 +117,13 @@ with the first axis varying slowest.
 | `VolumeWeighted` | Volume-aware contribution |
 | `OverlapWeighted` | Weight by overlap volume / output volume |
 
+`CenterSampled` and `VolumeWeighted` resolve each tap on the integer grid: the tap is the
+centre of the neighbouring output-level cell, and where that cell is split into finer leaves
+it reads the leaf whose lower corner the centre is (cells are half-open). The map therefore
+depends only on the leaf keys, not on where the grid sits in space, also for voxel sizes and
+origins that are not binary fractions (earlier versions located the tap as a floating-point
+point there, and rounding decided between the leaves touching it).
+
 Coarsen output resolution with `output_level_shift = -1`:
 
 ```cpp
@@ -128,6 +135,16 @@ auto restored = adaptive_convolution_transpose(coarse, up_weight, down, t);
 ```
 
 Transpose convolution uses the reference tensor's leaves.
+
+Kernel maps are built on the host once per (topology, kernel size, mode, shift) and cached;
+their index and weight arrays are uploaded once per device and dtype and reused by later
+calls. `KernelMapCache::instance().clear()` releases both. On CUDA the scatter-add uses
+`index_add_`, whose floating-point atomics make results vary in the last bits between runs;
+call `torch::globalContext().setDeterministicAlgorithms(true, false)` for bit-reproducible
+outputs (slower), as for any PyTorch scatter.
+On CUDA, consecutive kernel slots are processed in groups whose temporaries fit 32 MiB
+(`detail::cuda_apply_map_group_bytes()`, 0 = one group), so peak memory does not grow with the
+whole kernel map.
 `output_level_shift > 0` is currently unsupported.
 
 ## Pooling, interpolation, and resampling
@@ -199,6 +216,59 @@ topology pipeline.
 Kernel maps are cached per topology. Inspect
 `KernelMapCache::instance().stats()` and use `.clear()` when intentionally
 resetting the cache.
+
+Training batches usually put each sample next to the others along the first axis,
+so every batch is a new topology and its kernel maps are built from scratch, although
+each sample's share of them is the same every epoch. Part reuse keeps those shares:
+
+```cpp
+KernelMapCache::instance().set_part_reuse_bytes(size_t(512) << 20); // 0 = off (default)
+```
+
+A topology whose leaves form groups separated along the first axis by at least
+`(kernel_size - 1) / 2` empty level-0 cells is split into those groups (a topology that does
+not split is one group, so single samples seen again, such as a validation set, are reused too); each group is
+matched by content (its keys moved to start at level-0 x 0) against the groups of earlier
+batches, and the batch map is assembled from their maps. The result equals a full
+build exactly. It applies to `CenterSampled` and `VolumeWeighted`; stored groups are
+dropped least recently used first beyond the byte budget. `stats()` reports
+`part_hits`, `part_misses` and `part_bytes`. Pooled batches (`adaptive_pool`) split the
+same way, so every layer of an encoder benefits. Moving samples by whole level-0 cells
+keeps them identical; any other offset makes them new content.
+
+The host part budget does not include CUDA uploads. CUDA composition packs multiple parts
+into shared backing allocations; an individual part's tensor view can therefore keep an
+entire upload alive. Set an independent retention budget when device memory is constrained:
+
+```cpp
+auto &cache = KernelMapCache::instance();
+cache.set_part_device_bytes(size_t(32) << 20); // cap retained upload storage at 32 MiB
+// cache.set_part_device_bytes(0);            // compose without retaining part uploads
+// cache.set_part_device_bytes(size_t(-1));   // unlimited retention (backward-compatible default)
+```
+
+The budget is shared across CUDA devices and evicts least recently used **upload groups**,
+so every view of the same allocation is removed together. Host part maps remain available;
+evicted data are uploaded again when needed. An upload larger than the budget is used for
+the current composition without retention. Repeated references to a stored part share one upload.
+`stats()` reports `part_device_bytes`, `part_device_peak_bytes`, `part_device_groups`,
+`part_device_hits`, and `part_device_misses`; hit/miss counters count distinct parts per
+composition. Clearing the cache resets these counters; changing a budget does not reset
+the historical peak. Host cache eviction also releases device ownership.
+
+This cap covers live tensor storage retained for part reuse, counted once per backing
+allocation. A partially expired upload group is charged in full until eviction, so
+reported retention can conservatively exceed its remaining live tensor payload. It excludes composed batch maps, CUDA allocator reservation, and active
+operation temporaries. A running composition retains its source tensors until its CUDA
+stream finishes, so reducing a budget is not a global instantaneous VRAM limit. Allocator
+stream tracking keeps source storage valid when another stream uses an upload that is
+evicted immediately after kernel launch. Smaller budgets can trade training throughput
+for memory; compare synchronized measurements for the actual sample distribution.
+
+The batch kernel-map benchmark accepts `--part-device-mb M` (`-1` unlimited, `0` no
+retention). It reports retained device bytes, allocator peak allocated/reserved memory,
+first-epoch and later-epoch latency, and peak process working set. Use matched sample
+counts, seeds, modes, batch sizes and devices when comparing budgets.
 
 ## Limits and measurements
 
