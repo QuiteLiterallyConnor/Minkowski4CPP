@@ -32,11 +32,21 @@ void check_unchanged(const ThreadCounts& before, const char* what) {
 }
 
 // Every check runs with a known multi-threaded setting, so the test is meaningful on any machine
-// and restores the previous setting afterwards.
+// and restores the previous setting afterwards. The count is set through OpenMP directly:
+// at::set_num_threads also resizes LibTorch's other CPU pools, and doing that after earlier parallel
+// work made the process hang in DLL teardown at exit on Windows (LibTorch 2.15; 20-60 % of
+// "core_tests quantize" runs, all tests already passed). at::get_num_threads() reads the OpenMP value.
 struct ThreadScope {
     int saved = at::get_num_threads();
-    ThreadScope() { at::set_num_threads(2); }
-    ~ThreadScope() { at::set_num_threads(saved); }
+    ThreadScope() { set(2); }
+    ~ThreadScope() { set(saved); }
+    static void set(int n) {
+#ifdef _OPENMP
+        omp_set_num_threads(n);
+#else
+        at::set_num_threads(n);
+#endif
+    }
 };
 
 }  // namespace
