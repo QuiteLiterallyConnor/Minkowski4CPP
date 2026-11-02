@@ -225,7 +225,7 @@ TEST(gradient_sparse_max_pool_quantization_at_zero_keeps_unit_gradient) {
         }
         {
             auto f = f0.to(dev).detach().clone().requires_grad_(true);
-            minkowski::TensorField field(f, coords.to(torch::kFloat64).to(dev)); // field coordinates are real
+            minkowski::TensorField field(f, coords.to(torch::kFloat32).to(dev)); // field coordinates are float
             auto s = field.sparse({}, c10::nullopt, minkowski::SparseTensorQuantizationMode::MAX_POOL);
             CHECK_EQ(s.F().size(0), int64_t(2));
             s.F().sum().backward();
