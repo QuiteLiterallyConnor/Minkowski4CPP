@@ -67,6 +67,42 @@ current stream.
 operations, transfers, model loading with SH, rendering, and a full
 training step.
 
+#### Renderer gradient checks
+
+`tests/gaussian/test_gaussian_gradcheck.cpp` compares the analytic gradients
+of `loss = sum(w_i * image) + sum(w_d * depth) + sum(w_a * alpha)` (random
+weights, loss accumulated in float64) with central differences, element by
+element, for every renderer input (positions, rotations, scales, opacities,
+colors, background) and every raw `GaussianModel` parameter at SH degree 3,
+on the CPU path, the LibTorch path on CUDA and the CUDA kernels.
+
+| Quantity | Value |
+|---|---|
+| Step `h` | 4e-3 positions/rotations, 4e-3 scales, 1e-3 opacities, 1e-2 colors/background; raw model: 4e-3 xyz, 1e-2 SH, 5e-3 opacity logit, 2e-3 log-scale, 4e-3 quaternion |
+| Pass condition | `abs(analytic - numeric) <= 1e-2 * abs(numeric) + atol * max abs(numeric of that field)` |
+| `atol` | 2e-3 (CPU / LibTorch), 5e-3 (CUDA kernels: `__expf`, float atomics) |
+| SH evaluation | separately in float64, `1e-6 * abs(numeric) + 1e-8` |
+| CPU vs CUDA kernels | image/alpha 1e-3, depth 3e-3; gradients `2e-2 * max abs(grad) + 1e-4` |
+
+Finite differences legitimately break at the renderer's non-smooth points,
+so the gradcheck scenes are asserted to stay away from all of them:
+
+- alpha below 1/255 is dropped and alpha is clamped at 0.99 (each splat
+  alone covers every pixel with alpha in [2/255, 0.98]);
+- the tile/culling footprint (every splat reaches every tile);
+- the CUDA early stop at transmittance 1e-4 (three splats with opacity at
+  most 0.65 keep T >= 0.04);
+- the frustum clamp of the projection Jacobian (centers well inside it);
+- depth-order swaps (depths at least 0.25 apart, 60x the step);
+- the SH color clamp at 0 (radiance + 0.5 >= 0.05).
+
+Edge cases (empty scenes on every path, all splats culled, equal depths,
+near-plane crossing, the camera inside a huge splat, sub-pixel, huge,
+overflowing, degenerate and needle covariances, extreme coordinates) are
+checked for finite outputs and finite gradients rather than with finite
+differences. Splats whose center is behind the camera are culled, as in 3DGS,
+even if their extent covers the camera.
+
 ## Reported local measurements
 
 These values come from the README's RTX 3080 measurements; they are neither
