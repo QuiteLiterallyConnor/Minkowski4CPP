@@ -1,0 +1,6 @@
+         trainable attribute 0: gradient storage 16448 vs 2056 bytes
+[ FAIL ] gaussian_fused_gather_frozen_inputs_do_not_retain_unused_gradients
+         C:\Users\User\Work\mink-wt\gauss-cull\tests\gaussian\test_gaussian_gather.cpp:144: CHECK failed: got.storage().nbytes() <= static_cast<size_t>(got.numel() * got.element_size())
+
+0 passed, 1 failed, 67 skipped
+# exit 1 (expected 1 before correction)

@@ -1,0 +1,20 @@
+[
+  {
+    "arm": 0,
+    "gpu_operations_per_step": 283.0,
+    "gpu_sum_ms_per_step": 9.935494,
+    "gather_ms_per_step": 0.0,
+    "scatter_ms_per_step": 0.0,
+    "cat_ms_per_step": 0.3010572,
+    "gpu_memset_per_step": 38.0
+  },
+  {
+    "arm": 1,
+    "gpu_operations_per_step": 244.0,
+    "gpu_sum_ms_per_step": 9.2760268,
+    "gather_ms_per_step": 0.20368060000000002,
+    "scatter_ms_per_step": 0.2869384,
+    "cat_ms_per_step": 0.2358794,
+    "gpu_memset_per_step": 25.0
+  }
+]
