@@ -86,9 +86,11 @@ Use **`load_gaussian_model_ply`** to preserve SH and raw trainable parameters.
 `save_gaussian_ply(model, path)` writes a standard 3DGS layout with SH.
 
 In compressed files, packed colors are already RGB; conversion to the model
-uses `f_dc = (rgb - 0.5) / C0`. Compressed SH-byte decoding has **not been
-verified against reference output**. Validate interchange against your
-source renderer before relying on view-dependent color fidelity.
+uses `f_dc = (rgb - 0.5) / C0`. The compressed decode (positions, rotations,
+scales, opacity, color and the 8-bit SH bands) is verified against the
+uncompressed export of the same scene in
+`tests/gaussian/test_gaussian_compressed_ply.cpp`: SH bands are within half a
+quantization step (4/256 = 0.0156), colors within ~0.005.
 
 ## Filter, select, and merge
 
@@ -153,7 +155,6 @@ For posed-image reconstruction with densification, use
 
 - No Gaussian-to-sparse-voxel bridge or adaptive spatial index.
 - No shared SE(3) abstraction; transforms accept quaternions directly.
-- Compressed SH decoding remains unverified.
 - The renderer's fused CUDA path covers tile compositing; projection and
   SH evaluation remain LibTorch operations.
 
