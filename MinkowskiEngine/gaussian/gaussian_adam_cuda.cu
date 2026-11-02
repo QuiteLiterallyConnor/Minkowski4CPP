@@ -9,6 +9,7 @@
 #include <c10/cuda/CUDAGuard.h>
 
 #include <algorithm>
+#include <initializer_list>
 
 namespace minkowski {
 namespace gaussian {
@@ -35,7 +36,8 @@ __global__ void adam_kernel(int64_t n, float *__restrict__ p, const float *__res
 void adam_update_cuda(at::Tensor &param, const at::Tensor &grad, at::Tensor &moment1,
                       at::Tensor &moment2, const AdamParams &params) {
   const int64_t n = param.numel();
-  for (const auto *t : {&param, &grad, &moment1, &moment2})
+  using List = std::initializer_list<const at::Tensor *>;
+  for (const at::Tensor *t : List{&param, &grad, &moment1, &moment2})
     TORCH_CHECK(t->is_cuda() && t->is_contiguous() && t->scalar_type() == at::kFloat &&
                     t->numel() == n && t->device() == param.device(),
                 "adam_update_cuda: parameter, gradient and moments must be contiguous float32 CUDA "
