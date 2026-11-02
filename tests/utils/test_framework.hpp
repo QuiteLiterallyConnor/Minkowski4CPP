@@ -48,18 +48,18 @@ inline int run_all(int argc, char** argv) {
         ++selected;
         try {
             t.fn();
-            std::cout << "[ PASS ] " << t.name << "\n";
+            std::cout << "[ PASS ] " << t.name << std::endl;
             ++passed;
         } catch (const Skip& e) {
-            std::cout << "[ SKIP ] " << t.name << "\n         " << e.what() << "\n";
+            std::cout << "[ SKIP ] " << t.name << "\n         " << e.what() << std::endl;
             ++skipped;
         } catch (const std::exception& e) {
-            std::cout << "[ FAIL ] " << t.name << "\n         " << e.what() << "\n";
+            std::cout << "[ FAIL ] " << t.name << "\n         " << e.what() << std::endl;
             ++failed;
         }
     }
     std::cout << "\n" << passed << " passed, " << failed << " failed, " << skipped
-              << " skipped\n";
+              << " skipped" << std::endl;
     if (!filter.empty() && selected == 0) {
         std::cerr << "[ ERROR ] No tests matched filter: " << filter << "\n";
         return 1;
