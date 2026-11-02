@@ -3,6 +3,7 @@
 //                          [--modes center,volume,overlap] [--shift 0] [--interp 20000]
 //                          [--conv none|cpu|cuda] [--cout 16] [--dtype f32|f64]
 //                          [--region 16] [--phases cold,warm] [--drop-empty 0|1]
+//                          [--concat S]
 // Workload: half the points uniform in [0,256)^3, half in [0,16)^3; voxelized at level 0 and
 // the region [0,R)^3 refined to `depth`, R = --region (16 = the adaptive_bench workload).
 // --phases picks which kernel-map timings run (cold, warm or both).
@@ -20,6 +21,11 @@
 //  conv_<mode>_fwdbwd_ms  : forward + backward (features and weight), synchronized
 //  conv_<mode>_cuda_ms    : forward time between CUDA events (cuda only)
 //  cuda_max_alloc_mb / cuda_max_reserved_mb : caching-allocator peaks over the conv runs
+// With --concat S: S samples (each --n points on a random ellipsoid surface spanning 4 level-0
+// cells, the half x < 2 cells refined to --depth) are placed side by side along x, 6 level-0
+// cells apart, as a training batch is built, and only from_voxels on the concatenation is timed:
+//  concat_leaves          : leaves in the batch
+//  concat_from_voxels_ms  : AdaptiveSparseTensor::from_voxels (key sort + topology build)
 // Always: peak_working_set_mb (process peak, Windows) at exit.
 #include <algorithm>
 #include <chrono>
@@ -66,6 +72,7 @@ struct Args {
     std::string dtype = "f32";
     double region = 16.0;
     std::string phases = "cold,warm";
+    int64_t concat = 0;
 };
 
 Args parse(int argc, char** argv) {
@@ -86,6 +93,7 @@ Args parse(int argc, char** argv) {
         else if (k == "--region") a.region = std::atof(v.c_str());
         else if (k == "--phases") a.phases = v;
         else if (k == "--drop-empty") a.drop_empty = std::atoi(v.c_str()) != 0;
+        else if (k == "--concat") a.concat = std::atoll(v.c_str());
         else {
             std::cerr << "unknown argument " << k << "\n";
             std::exit(2);
@@ -235,8 +243,43 @@ void print_peak_ws() {
 
 }  // namespace
 
+int run_concat(const Args& a) {
+    AdaptiveVoxelConfig cfg;
+    cfg.base_voxel_size = {1.0, 1.0, 1.0};
+    const double m = 1.0 / double(1u << a.depth);
+    cfg.min_voxel_size = {m, m, m};
+    cfg.max_depth = a.depth;
+    std::vector<at::Tensor> cs, ls;
+    for (int64_t s = 0; s < a.concat; ++s) {
+        torch::manual_seed(100 + s);
+        auto dir = torch::randn({a.n, 3}, torch::kFloat64);
+        dir = dir / dir.norm(2, 1, true);
+        auto radii = torch::rand({1, 3}, torch::kFloat64) * 1.2 + 0.6;
+        auto t = AdaptiveSparseTensor::from_points(dir * radii + 2.0,
+                                                   torch::ones({a.n, 1}, torch::kFloat64), cfg);
+        t.refine(AxisAlignedRegion{{0, 0, 0}, {2, 4, 4}}, a.depth);
+        auto c = t.coordinates().clone();
+        c.select(1, 0).add_((torch::pow(2.0, t.levels().to(torch::kFloat64)) * (6.0 * s)).to(torch::kInt64));
+        cs.push_back(c);
+        ls.push_back(t.levels());
+    }
+    const auto coords = torch::cat(cs, 0), levels = torch::cat(ls, 0);
+    const auto feats = torch::randn({coords.size(0), a.channels}, torch::kFloat32);
+    print("concat_samples", static_cast<double>(a.concat));
+    print("concat_leaves", static_cast<double>(coords.size(0)));
+    report("concat_from_voxels", a, [] {},
+           [&] { AdaptiveSparseTensor::from_voxels(coords, levels, feats, cfg); });
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const Args a = parse(argc, argv);
+    if (a.concat > 0) {
+        std::cout << std::fixed << std::setprecision(3);
+        const int rc = run_concat(a);
+        print_peak_ws();
+        return rc;
+    }
     torch::manual_seed(0);
     auto pts = torch::cat({torch::rand({a.n / 2, 3}, torch::kFloat64) * 256.0,
                            torch::rand({a.n - a.n / 2, 3}, torch::kFloat64) * 16.0});
