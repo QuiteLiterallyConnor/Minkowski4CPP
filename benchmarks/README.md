@@ -74,8 +74,10 @@ paths, their explicit directory options can be omitted.
 # A/B comparison of two builds (`ab_compare.py`)
 
 `benchmarks/ab_compare.py` (Python 3 standard library only) runs the same benchmark executable
-from two build directories alternately (A B A B ...), one fresh process per run, so that slow
-drift in machine load affects both sides equally. Example, original vs optimized adaptive
+from two build directories alternately, one fresh process per run, so that slow drift in
+machine load affects both sides equally. The order inside a pair swaps every pair (A B, B A, ...;
+`--fixed-order` keeps A B), because the second process of a pair can be systematically slower
+(measured on CUDA on the test host) and a fixed order would credit that to one side. Example, original vs optimized adaptive
 convolution on CUDA:
 
 ```powershell

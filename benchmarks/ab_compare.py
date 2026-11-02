@@ -4,8 +4,10 @@
         [--rounds 5] [--warmup-rounds 1] [--budget-s 480] [--gpu-sample-ms 200] \
         [--load-gate 25] [--extract key=REGEX] -- EXE [args...]
 
-Runs EXE from BUILD_A and BUILD_B alternately (A B A B ...), each as a fresh process, and records
-per process:
+Runs EXE from BUILD_A and BUILD_B alternately, each as a fresh process, swapping which side goes
+first every pair (A B, B A, A B, ...; --fixed-order keeps A B): on a shared host the second process
+of a pair can be systematically slower or faster (thermal/boost state, caches, GPU clocks), and a
+fixed order would credit that to one side. Records per process:
   * wall_ms           whole-process elapsed time = cold start (DLL load, CUDA context, first calls)
   * peak_ws_mb        process peak working set (Windows GetProcessMemoryInfo, read after exit)
   * cpu_s / cpu_cores user+kernel CPU time of the process and its mean core usage
@@ -20,7 +22,8 @@ the process also runs with that directory as its working directory. EXE ending i
 the current Python interpreter.
 
 Resumable: NAME.json in --out keeps every run; a rerun appends rounds until --rounds timed rounds
-exist. Each invocation first runs --warmup-rounds discarded A B pairs (file cache, driver JIT).
+exist (the order keeps alternating across invocations). Each invocation first runs --warmup-rounds
+discarded pairs (file cache, driver JIT). Every run records its "position" in its pair (0 = first).
 --budget-s stops before a pair that would not fit (exit 3 = incomplete, rerun to continue), so each
 invocation can live inside one benchmark-lock hold. Results: NAME.json (raw + summary), NAME.md
 (table: median [min-max] per side, % change of B vs A), NAME.<side>.<run>.txt (stdout),
@@ -247,7 +250,9 @@ def fmt(v):
 def markdown(state, keys_filter=None):
     (na, _), (nb, _) = state["sides"]
     sa, sb = state["summary"].get(na, {}), state["summary"].get(nb, {})
+    orders = sorted({b.get("order", "fixed") for b in state.get("blocks", [])})
     lines = [f"### {state['name']}", "", f"`{' '.join(state['cmd'])}`", "",
+             f"pair order: {' + '.join(orders) or 'n/a'}", "",
              f"| metric | {na} median [min-max] | {nb} median [min-max] | change | n |", "|---|---|---|---|---|"]
     for k in sorted(set(sa) & set(sb)):
         if k.endswith(("_min_ms", "_max_ms")) or (keys_filter and not re.search(keys_filter, k)):
@@ -293,6 +298,8 @@ def main(argv=None):
     ap.add_argument("--timeout", type=float, default=900, help="per-process limit in seconds")
     ap.add_argument("--extract", action="append", default=[], help="key=REGEX on stdout (group 1)")
     ap.add_argument("--label", default="", help="free text stored with this invocation (e.g. contention)")
+    ap.add_argument("--fixed-order", action="store_true",
+                    help="always run A then B (default: swap the order every pair)")
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
@@ -326,7 +333,8 @@ def main(argv=None):
         os.replace(tmp, state_path)
         (out / f"{a.name}.md").write_text(markdown(state), encoding="utf-8")
 
-    block = {"started": now(), "label": a.label, "load_samples": []}
+    block = {"started": now(), "label": a.label, "load_samples": [],
+             "order": "fixed" if a.fixed_order else "alternating"}
     state["blocks"].append(block)
     if a.load_gate > 0:
         for i in range(3):
@@ -354,11 +362,15 @@ def main(argv=None):
             rc = 3
             break
         t_pair = time.perf_counter()
-        for n, _ in sides:
+        # Pairs started so far (every pair runs B once); odd pairs run B first.
+        pairs = sum(1 for r in state["runs"] if r["side"] == sides[1][0])
+        order = sides if a.fixed_order or pairs % 2 == 0 else sides[::-1]
+        for pos, (n, _) in enumerate(order):
             idx = sum(1 for r in state["runs"] if r["side"] == n)
             tag = f"w{idx}" if kind == "warmup" else f"r{idx}"
             rec = run_once(exes[n], cmd[1:], out, a.name, n, tag, a)
             rec["warmup"] = kind == "warmup"
+            rec["position"] = pos
             rec["block"] = len(state["blocks"])
             state["runs"].append(rec)
             save()

@@ -1,7 +1,7 @@
 """Self-test for benchmarks/ab_compare.py (standard library only; registered in CTest).
 
 Two fake "build directories" hold the same script benchmark; the one in dir B reports half the
-latency. Checks interleaving, warm-up exclusion, metric parsing (stdout + {json}), resume, the
+latency. Checks interleaving with alternating order, warm-up exclusion, metric parsing (stdout + {json}), resume, the
 budget stop (exit 3), failure handling (exit 1) and the Markdown table.
 """
 import json
@@ -62,7 +62,9 @@ class AbCompareTest(unittest.TestCase):
     def test_interleaved_summary_and_markdown(self):
         self.assertEqual(self.run_ab("--", "bench.py", "--json", "{json}"), 0)
         st = self.state()
-        self.assertEqual([r["side"] for r in st["runs"]], ["base", "cand"] * 4)
+        # Pair order swaps every pair, warm-up included: A B, B A, A B, B A.
+        self.assertEqual([r["side"] for r in st["runs"]], ["base", "cand", "cand", "base"] * 2)
+        self.assertEqual([r["position"] for r in st["runs"]], [0, 1] * 4)
         self.assertEqual([r["warmup"] for r in st["runs"]], [True, True] + [False] * 6)
         base, cand = st["summary"]["base"], st["summary"]["cand"]
         self.assertEqual(base["fwd_ms"]["n"], 3)
@@ -75,6 +77,18 @@ class AbCompareTest(unittest.TestCase):
         md = (self.out / "fake.md").read_text()
         self.assertIn("| fwd_ms | 10.00 [10.00-10.00] | 5.00 [5.00-5.00] | -50.0 % | 3/3 |", md)
         self.assertIn("leaves=1000", md)  # identical constants listed once
+        self.assertIn("pair order: alternating", md)
+
+    def test_fixed_order(self):
+        self.assertEqual(self.run_ab("--fixed-order", "--", "bench.py"), 0)
+        st = self.state()
+        self.assertEqual([r["side"] for r in st["runs"]], ["base", "cand"] * 4)
+        self.assertIn("pair order: fixed", (self.out / "fake.md").read_text())
+
+    def test_order_keeps_alternating_across_invocations(self):
+        self.assertEqual(self.run_ab("--", "bench.py", rounds=1, warmup=0), 0)
+        self.assertEqual(self.run_ab("--", "bench.py", rounds=2, warmup=0), 0)
+        self.assertEqual([r["side"] for r in self.state()["runs"]], ["base", "cand", "cand", "base"])
 
     def test_resume_adds_only_missing_rounds(self):
         self.assertEqual(self.run_ab("--", "bench.py", rounds=2), 0)
