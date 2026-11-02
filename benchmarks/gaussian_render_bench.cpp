@@ -7,6 +7,8 @@
 //   gaussian_render_bench [--input scene.ply | --synthetic]
 //       [--counts 5000,20000,0] (0 = all splats) [--sizes 128,512]
 //       [--devices cpu,cuda,cuda-torch] [--warmup 2] [--iterations 5]
+//       [--fused-projection 0|1] (CUDA projection kernels, default 1)
+//       [--fused-tiles 0|1] (CUDA culling and tile-list kernels, default 1)
 //       [--train] [--label name] [--output results.json]
 //       [--dump-grads prefix] [--compare-grads prefix]
 //
@@ -24,6 +26,7 @@
 #include <torch/version.h>
 
 #ifdef USE_CUDA
+#include "gaussian/gaussian_cuda.hpp"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <cuda_runtime.h>
@@ -115,7 +118,9 @@ std::pair<uint64_t, uint64_t> cuda_peak(const torch::Device &device) {
   if (device.is_cuda()) {
     const auto stats =
         c10::cuda::CUDACachingAllocator::getDeviceStats(device.index());
-    const auto all = static_cast<size_t>(c10::CachingAllocator::StatType::AGGREGATE);
+    // c10::CachingDeviceAllocator names StatType in LibTorch 2.5 (CUDA 12.4
+    // profile) and re-exports c10::CachingAllocator's in 2.15.
+    const auto all = static_cast<size_t>(c10::CachingDeviceAllocator::StatType::AGGREGATE);
     return {static_cast<uint64_t>(stats.allocated_bytes[all].peak),
             static_cast<uint64_t>(stats.reserved_bytes[all].peak)};
   }
@@ -226,6 +231,14 @@ int main(int argc, char **argv) {
         iterations = std::max(1, std::stoi(next()));
       else if (a == "--train")
         train = true;
+#ifdef USE_CUDA
+      else if (a == "--fused-projection") // 0: LibTorch projection, 1: fused CUDA (default)
+        minkowski::gaussian::detail::cuda_fused_projection() = std::stoi(next()) != 0;
+      else if (a == "--fused-tiles") // 0: LibTorch culling and tile lists, 1: CUDA kernels
+        minkowski::gaussian::detail::cuda_fused_tiles() = std::stoi(next()) != 0;
+      else if (a == "--fused-gather") // 0: index_select + cat, 1: CUDA gather/scatter
+        minkowski::gaussian::detail::cuda_fused_gather() = std::stoi(next()) != 0;
+#endif
       else if (a == "--label")
         label = next();
       else if (a == "--output")

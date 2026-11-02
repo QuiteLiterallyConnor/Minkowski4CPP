@@ -1,0 +1,20 @@
+========= COMPUTE-SANITIZER
+[ PASS ] gaussian_fused_gather_exact_permutation_and_gradient
+[ PASS ] gaussian_fused_gather_finite_difference
+[ PASS ] gaussian_fused_gather_current_stream_and_temporaries
+[ PASS ] gaussian_fused_gather_rejects_invalid_metadata
+         trainable attribute 0: gradient storage 2056 vs 2056 bytes
+         trainable attribute 1: gradient storage 10280 vs 10280 bytes
+         trainable attribute 2: gradient storage 1028 vs 1028 bytes
+         trainable attribute 3: gradient storage 3084 vs 3084 bytes
+[ PASS ] gaussian_fused_gather_frozen_inputs_do_not_retain_unused_gradients
+         gather render grad 0 relative diff 2.17897e-07
+         gather render grad 1 relative diff 4.70327e-07
+         gather render grad 2 relative diff 3.09014e-07
+         gather render grad 3 relative diff 7.81771e-08
+         gather render grad 4 relative diff 4.18929e-07
+         gather render grad 5 relative diff 1.14576e-07
+[ PASS ] gaussian_fused_gather_render_retains_means_gradient
+
+6 passed, 0 failed, 62 skipped
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

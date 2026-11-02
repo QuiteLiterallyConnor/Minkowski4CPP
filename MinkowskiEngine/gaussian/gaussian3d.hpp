@@ -120,8 +120,13 @@ public:
     return result;
   }
 
+  // Evaluated in the Gaussian's frame, sum_k ((R^T d)_k / s_k)^2, instead of
+  // d^T Sigma^-1 d: the explicit inverse has entries ~1/s_min^2 whose float
+  // rounding swamps the result once the scales differ by ~1e3 (a float
+  // Gaussian with scales {2, 0.5, 1e-3} gave 2.75 instead of 2.89).
   T mahalanobis_squared(const Vector3<T> &point) const {
-    const auto inverse = inverse_covariance();
+    validate();
+    const auto rotation = rotation_matrix();
     Vector3<T> delta{};
     for (size_t i = 0; i < 3; ++i) {
       if (!std::isfinite(point[i]))
@@ -129,10 +134,14 @@ public:
       delta[i] = point[i] - mean[i];
     }
     T distance = T(0);
-    for (size_t row = 0; row < 3; ++row)
-      for (size_t column = 0; column < 3; ++column)
-        distance += delta[row] * inverse[row][column] * delta[column];
-    return std::max(T(0), distance);
+    for (size_t axis = 0; axis < 3; ++axis) {
+      T local = T(0);
+      for (size_t i = 0; i < 3; ++i)
+        local += rotation[i][axis] * delta[i];
+      local /= scale[axis];
+      distance += local * local;
+    }
+    return distance;
   }
 
   T density(const Vector3<T> &point) const {
