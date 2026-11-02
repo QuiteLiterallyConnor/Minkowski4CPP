@@ -111,3 +111,76 @@ research host, the known LibTorch `indexing_backward_kernel` issue required an
 exclusion in the whole-trainer sanitizer run. The fused Adam kernel remained
 instrumented. Kernel-only runtime and allocation profiling should be reported
 separately from end-to-end trainer latency.
+
+## Round 9 measured results
+
+Source `977bd71e2dc87ad718e5cf323252e2347dc3d0c3`, based on upstream
+`f4ac612` plus the allocator namespace compatibility fix from PR #32. This
+standalone experiment does not include the projection, tile-list, or SSIM fusions
+from PRs #48–#50. The baseline is the unchanged ATen optimizer path selected with
+`--fused-adam 0` in the same executable.
+
+All 20 benchmark processes succeeded. Each rendered the 139,410-Gaussian
+`tests/data/test.ply` scene at 512 and 1024 pixels, with three warm-ups and ten
+timed samples. Ten paired rounds alternated arm order. An exclusive lock
+prevented team compilation or other team GPU work during the experiment.
+**The host was contended:** CPU utilization sampled before and after the run
+was 40.7% and 54.6%. GPU clocks were not fixed. Values below are medians of
+round medians; brackets show the range across rounds.
+
+| Image | Metric | ATen Adam | Fused Adam | Change | Faster pairs |
+|---|---|---:|---:|---:|---:|
+| 512 | Training step, ms | 25.787 [24.181–32.873] | 24.268 [23.310–27.006] | -5.89% | 9/10 |
+| 1024 | Training step, ms | 43.438 [42.367–52.960] | 43.079 [40.860–58.813] | -0.83% | 5/10 |
+| 512 | Reciprocal median throughput, steps/s | 38.78 | 41.21 | +6.26% | — |
+| 1024 | Reciprocal median throughput, steps/s | 23.02 | 23.21 | +0.83% | — |
+| 512 | Training-phase CUDA allocated peak, MiB | 330.728 | 330.765 | +0.01% | — |
+| 1024 | Training-phase CUDA allocated peak, MiB | 558.366 | 558.830 | +0.08% | — |
+| 512 | Training-phase CUDA reserved peak, MiB | 408 | 400 | -1.96% | — |
+| 1024 | Training-phase CUDA reserved peak, MiB | 702 | 716 | +1.99% | — |
+| 512 | Process peak working set, MiB | 1153.535 | 1124.943 | -2.48% | — |
+| 1024 | Process peak working set, MiB | 1164.625 | 1136.033 | -2.46% | — |
+
+The 1024-pixel timing result is inconclusive, and its reserved-memory increase
+is a regression. Even unchanged renderer-only control measurements moved by
+about -4% in their pooled medians, with mixed paired wins. These observations
+limit attribution of small end-to-end differences on this shared host; no
+universal speedup or GPU-memory reduction is claimed. Kernel-only time and
+cold-start time were not measured. Whole-run `nvidia-smi` samples included both
+arms and initialization (75 samples; utilization median 64%, range 1–92%) and
+must not be used as an arm-specific utilization improvement.
+
+The allocation peak includes model cloning, optimizer initialization and
+persistent scene/probe tensors. The reservation peak can retain cached blocks
+from preceding render phases. Neither is an optimizer-only or whole-device
+VRAM metric. The slight allocation differences can include allocator behavior
+and renderer/training trajectories; they are not evidence of lower optimizer
+storage.
+
+Validation of this implementation:
+
+| Configuration | Adaptive pass/fail/skip | Gaussian pass/fail/skip | CTest |
+|---|---|---|---|
+| CPU-only | 119/0/1 | 36/0/4 | 4/4 |
+| CUDA | 123/0/0 | 47/0/0 | 4/4 |
+
+All five Adam cases also passed Compute Sanitizer with zero errors: memcheck
+excluded only the known LibTorch `indexing_backward_kernel` issue; racecheck
+instrumented `adam_kernel`; initcheck used full instrumentation. A previous
+initcheck run filtered to only Adam failed with uninitialized-source reports
+after ATen initialization writes were excluded. The same binary passed the
+unfiltered run; the failed filtered experiment is retained in the evidence
+history. Sanitizer runs also varied the renderer's nondeterministic trainer
+gradients slightly (up to 2.08e-7 relative), within the unchanged tolerance.
+
+Hardware: AMD Ryzen 5 5600X (6 cores/12 threads), 16 GiB-class RAM, NVIDIA
+RTX 2080 SUPER (8 GiB, sm_75), driver 610.88, Windows 11 Pro 10.0.26200,
+MSVC 19.44, LibTorch 2.15.0+cu134, CUDA toolkit profile 13.4.3
+(nvcc 13.4.92), Release. Docker was unavailable locally; Docker CI compilation
+is separate from native execution, and older LibTorch runtime parity remains
+unverified.
+
+The [machine-readable evidence](benchmarks/gaussian_adam_round9.json) contains
+every raw timing sample, arm/round identity, test summaries, hardware,
+executable/scene hashes, memory measurements and failure history. It is enough
+to recompute this table without relying on the rounded values printed here.
