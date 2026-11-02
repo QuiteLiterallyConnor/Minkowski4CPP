@@ -91,8 +91,10 @@ foreach ($job in $Jobs) {
     $status = 'done'
     if (-not $p.WaitForExit([int]($TimeoutMin * 60000))) {
         $status = 'TIMEOUT'
-        & taskkill /T /F /PID $p.Id *> $null
-        $p.WaitForExit()
+        # Kill through our own handle: taskkill can fail with "no running instance" for a process that is
+        # visible to CIM but not openable from a new process (seen on this host).
+        try { $p.Kill($true) } catch { & taskkill /T /F /PID $p.Id *> $null }
+        [void]$p.WaitForExit(60000)
     }
     $sec = [int]((Get-Date) - $t0).TotalSeconds
     $text = $outTask.Result + "`n--- stderr ---`n" + $errTask.Result
