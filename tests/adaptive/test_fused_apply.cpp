@@ -126,9 +126,10 @@ Result reference_run(const AdaptiveKernelMap& m, const at::Tensor& x0, const at:
 TEST(fused_apply_cuda_matches_per_slot_reference) {
     require_cuda();
     Fused on(true);
-    // Channel pairs covering every tile edge (8, 16, 32) and counts that are not multiples
-    // of it.
-    const std::vector<std::pair<int64_t, int64_t>> channels = {{4, 5}, {3, 70}, {8, 16}, {32, 64}};
+    // Channel pairs covering every kernel (8 and 16 tiles, register-blocked 64 x 64) and
+    // counts that are not multiples of the tile.
+    const std::vector<std::pair<int64_t, int64_t>> channels = {
+        {4, 5}, {3, 70}, {8, 16}, {24, 32}, {32, 64}, {40, 70}};
     for (auto dtype : {torch::kFloat64, torch::kFloat32}) {
         for (auto [cin, cout] : channels) {
             auto base = mixed_tensor(cin, dtype).to(torch::kCUDA);

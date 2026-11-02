@@ -15,13 +15,16 @@ namespace minkowski {
 namespace adaptive {
 namespace detail {
 
-// Square tile edge used by both kernels for these channel counts (8, 16 or 32).
+// Tile edge for these channel counts (8, 16 or 32; symmetric in cin/cout). 8 and 16 use
+// BS x BS thread blocks; 32 selects the register-blocked 64 x 64 kernels.
 int fused_tile(int64_t cin, int64_t cout);
+// Pairs per tile the forward/input-gradient tile table must use (BS, or 64 when blocked).
+int fused_tile_rows(int64_t cin, int64_t cout);
 
 // y[to[p]] += pw[p] * x[from[p]] @ W[k(p)] over all pairs p (pw empty = weight 1).
 // w is [K, cin, cout], or [K, cout, cin] read transposed when `trans_w` (input gradient).
 // x [*, cin], y [*, cout] contiguous, same dtype (float or double) and device. `tiles` must
-// use fused_tile(cin, cout) rows per tile.
+// use fused_tile_rows(cin, cout) rows per tile.
 void cuda_fused_gather_gemm_scatter(const at::Tensor &x, const at::Tensor &w,
                                     const at::Tensor &from, const at::Tensor &to,
                                     const at::Tensor &pw, const at::Tensor &tiles, bool trans_w,

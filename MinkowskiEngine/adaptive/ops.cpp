@@ -110,8 +110,7 @@ at::Tensor apply_map(const at::Tensor &x, const at::Tensor &weight, const Kernel
   if (x.is_cuda() && detail::cuda_apply_map_fused() &&
       !at::globalContext().deterministicAlgorithms() &&
       (x.scalar_type() == at::kFloat || x.scalar_type() == at::kDouble)) {
-    const int bs = detail::fused_tile(x.size(1), cout);
-    auto tiles = entry.device->tiles(m, x.device(), bs);
+    auto tiles = entry.device->tiles(m, x.device(), detail::fused_tile_rows(x.size(1), cout));
     auto chunks = entry.device->tiles(m, x.device(), kFusedChunkRows);
     auto pw = weighted ? arrays.weight : at::empty({0}, x.options());
     return FusedApplyMap::apply(x.contiguous(), weight.to(x.scalar_type()).contiguous(), from_d,
