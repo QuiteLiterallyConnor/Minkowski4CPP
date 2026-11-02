@@ -126,6 +126,9 @@ __global__ void raster_backward_kernel(
     const float *grad_out, const float *final_t, const int32_t *last_index,
     float *grad_attrs) {
   __shared__ Shared s;
+  // Gaussian row of every batch entry, so lane 0 does not re-read ids from
+  // global memory for each atomic.
+  __shared__ int32_t batch_ids[kBlock];
   __shared__ int block_last;
   const int t = threadIdx.y * kTile + threadIdx.x;
   const int lane = t & 31;
@@ -163,18 +166,26 @@ __global__ void raster_backward_kernel(
        base -= kBlock) {
     __syncthreads();
     load_batch(s, attrs, ids + begin, base, total);
+    if (base + t < total)
+      batch_ids[t] = ids[begin + base + t];
     __syncthreads();
     const int n = min(kBlock, total - base);
     for (int j = n - 1; j >= 0; --j) {
-      float v[kAttrs];
-#pragma unroll
-      for (int k = 0; k < kAttrs; ++k)
-        v[k] = 0.0f;
-
       float dx, dy, gauss;
       float alpha = -1.0f;
       if (inside && base + j < my_last)
         alpha = eval_alpha(s, j, px, py, &dx, &dy, &gauss);
+      // Most (pixel, Gaussian) pairs of a tile fall below the 1/255 cut-off.
+      // When none of the 32 lanes is hit, every v[k] below would be zero:
+      // skip the 10 warp reductions and the atomics (warp-uniform branch, so
+      // the full-mask shuffles stay valid).
+      if (!__any_sync(0xffffffffu, alpha >= 0.0f))
+        continue;
+
+      float v[kAttrs];
+#pragma unroll
+      for (int k = 0; k < kAttrs; ++k)
+        v[k] = 0.0f;
       if (alpha >= 0.0f) {
         T = T / (1.0f - alpha);
         const float4 co = s.conic_opacity[j];
@@ -216,8 +227,7 @@ __global__ void raster_backward_kernel(
       for (int k = 0; k < kAttrs; ++k)
         v[k] = warp_sum(v[k]);
       if (lane == 0) {
-        float *dst = grad_attrs + static_cast<int64_t>(ids[begin + base + j]) *
-                                      kAttrs;
+        float *dst = grad_attrs + static_cast<int64_t>(batch_ids[j]) * kAttrs;
 #pragma unroll
         for (int k = 0; k < kAttrs; ++k)
           if (v[k] != 0.0f)
