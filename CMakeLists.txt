@@ -443,6 +443,15 @@ if(MINK_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/utils)
 
+    if(CPU_ONLY)
+        get_target_property(_mink_cpu_library_sources minkowski_cpp SOURCES)
+        set(_mink_cpu_source_file "${CMAKE_CURRENT_BINARY_DIR}/mink-cpu-library-sources.txt")
+        file(WRITE "${_mink_cpu_source_file}" "${_mink_cpu_library_sources}")
+        add_test(NAME cmake_cpu_coordinate_manager_sources
+            COMMAND ${CMAKE_COMMAND} -DSOURCE_FILE=${_mink_cpu_source_file}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_cpu_coordinate_manager.cmake)
+    endif()
+
     add_executable(train
         tests/train.cpp
     )
