@@ -1,0 +1,17 @@
+{
+  "recorded": "2026-11-02T20:32:36.3512770+01:00",
+  "head": "b96db27aa5ef68e67d8c8bc3b3e6fa3a7548dcac",
+  "object_path": "C:\\Users\\User\\Work\\mink-build\\gauss-cull-cuda\\CMakeFiles\\minkowski_cpp.dir\\MinkowskiEngine\\gaussian\\gaussian_raster_cuda.cu.obj",
+  "object_sha256": "9414AA7CBD1BC007FF60F301129955B76DC24FF0207D5DB7155F48569D305B4B",
+  "cpu": {
+    "Name": "AMD Ryzen 5 5600X 6-Core Processor             ",
+    "NumberOfCores": 6,
+    "NumberOfLogicalProcessors": 12
+  },
+  "cuobjdump": "C:\\Users\\User\\Work\\mink-env\\cuda-13.4\\bin\\cuobjdump.exe",
+  "commands": [
+    "cuobjdump --dump-resource-usage gaussian_raster_cuda.cu.obj",
+    "cuobjdump --dump-sass gaussian_raster_cuda.cu.obj"
+  ],
+  "limitations": "Static binary inspection; no dynamic occupancy or kernel-counter measurement."
+}

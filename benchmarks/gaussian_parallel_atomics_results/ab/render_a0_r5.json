@@ -1,0 +1,13 @@
+{
+  "label": "run",
+  "input": "test.ply",
+  "scene_gaussians": 139410,
+  "build_type": "Release",
+  "torch_version": "2.15.0",
+  "warmup": 3,
+  "iterations": 10,
+  "records": [
+    {"device": "cuda", "count": 139410, "size": 512, "visible": 91688, "pairs": 499846, "pairs_source": "renderer", "mean_alpha": 0.748046, "cuda_peak_allocated_forward": 105013248, "cuda_peak_allocated_backward": 206070272, "cuda_peak_reserved": 255852544, "process_peak_working_set": 1011752960, "forward_ms": [10.3607, 10.1142, 10.6507, 10.3163, 10.0462, 9.5716, 9.6841, 9.8458, 10.2922, 9.9368], "forward_median_ms": 10.0802, "backward_ms": [15.1718, 14.1535, 14.5412, 14.7921, 14.721, 14.5104, 14.5213, 14.4543, 14.7978, 14.4952], "backward_median_ms": 14.5312, "forward_backward_ms": [25.7442, 24.847, 25.4431, 25.3344, 26.3892, 24.8376, 25.1609, 24.2083, 25.0588, 25.2955], "forward_backward_median_ms": 25.2282, "train_ms": [27.996, 27.0079, 28.5917, 28.9545, 27.0979, 28.1415, 28.0183, 24.6152, 24.7193, 25.7299], "train_median_ms": 27.5469},
+    {"device": "cuda", "count": 139410, "size": 1024, "visible": 91527, "pairs": 1242773, "pairs_source": "renderer", "mean_alpha": 0.746178, "cuda_peak_allocated_forward": 136023552, "cuda_peak_allocated_backward": 244176896, "cuda_peak_reserved": 322961408, "process_peak_working_set": 1023381504, "forward_ms": [12.6378, 13.4705, 12.5357, 12.6462, 12.5428, 12.1764, 12.2888, 11.365, 11.7918, 12.1039], "forward_median_ms": 12.4123, "backward_ms": [26.9323, 27.231, 27.3163, 25.1902, 25.5365, 24.1316, 26.4837, 26.4217, 26.5602, 27.089], "backward_median_ms": 26.5219, "forward_backward_ms": [41.4792, 40.3264, 40.2007, 38.1098, 38.6808, 37.546, 42.6338, 40.0256, 39.6098, 39.4351], "forward_backward_median_ms": 39.8177, "train_ms": [68.4215, 67.8503, 69.8066, 67.6819, 67.1802, 68.0638, 68.5865, 67.5434, 67.4461, 68.6648], "train_median_ms": 67.9571}
+  ]
+}

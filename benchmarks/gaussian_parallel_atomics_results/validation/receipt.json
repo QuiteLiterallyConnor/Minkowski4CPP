@@ -1,0 +1,38 @@
+{
+  "started": "2026-11-02T20:34:16.0927300+01:00",
+  "head": "b96db27aa5ef68e67d8c8bc3b3e6fa3a7548dcac",
+  "status": "passed",
+  "configurations": [
+    {
+      "kind": "cpu",
+      "build_exit": 0,
+      "ctest_exit": 0,
+      "binaries": [
+        {
+          "Path": "C:\\Users\\User\\Work\\mink-build\\gauss-cull-cpu\\gaussian_tests.exe",
+          "Hash": "448A71AFF94796D5E267A875D7A0618C77AB2052D0118159502B1680CD5E8B7B"
+        },
+        {
+          "Path": "C:\\Users\\User\\Work\\mink-build\\gauss-cull-cpu\\adaptive_tests.exe",
+          "Hash": "106A2BBD08CF310C8D1E0EA657A5DA48A7D0A745290A1C1077B81E4C977FEAA8"
+        }
+      ]
+    },
+    {
+      "kind": "cuda",
+      "build_exit": 0,
+      "ctest_exit": 0,
+      "binaries": [
+        {
+          "Path": "C:\\Users\\User\\Work\\mink-build\\gauss-cull-cuda\\gaussian_tests.exe",
+          "Hash": "98010BF3F1AEC7CD06A5E68D911EF973C43B55E4842FC508F25267023E691028"
+        },
+        {
+          "Path": "C:\\Users\\User\\Work\\mink-build\\gauss-cull-cuda\\adaptive_tests.exe",
+          "Hash": "AE1DA23DCE153BD141A6027240F6E06CBDC5877C94519E1E43B4EEB5BC8BF9AD"
+        }
+      ]
+    }
+  ],
+  "completed": "2026-11-02T20:40:34.0783096+01:00"
+}
