@@ -1,4 +1,5 @@
 #include "tensor_field.hpp"
+#include <limits>
 #include <stdexcept>
 
 namespace minkowski {
@@ -74,9 +75,14 @@ SparseTensor TensorField::sparse(
     }
 
     case SparseTensorQuantizationMode::MAX_POOL: {
-
+      // Start from -inf, not 0: scatter_reduce's amax backward also counts the initial value as
+      // a tied maximum (even with include_self=false), which halved the gradient of a maximum
+      // of exactly 0. Every row has at least one point, so no row keeps the initial value.
       quantized_features = torch::scatter_reduce(
-          torch::zeros({static_cast<int64_t>(size), features_.size(1)}, features_.options()),
+          features_.is_floating_point()
+              ? torch::full({static_cast<int64_t>(size), features_.size(1)},
+                            -std::numeric_limits<double>::infinity(), features_.options())
+              : torch::zeros({static_cast<int64_t>(size), features_.size(1)}, features_.options()),
           0,
           inverse_mapping.unsqueeze(1).expand({-1, features_.size(1)}),
           features_,
