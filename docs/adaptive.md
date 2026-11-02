@@ -139,6 +139,7 @@ auto query = torch::tensor({{1.0, 2.0, 3.0}, {40.0, 5.0, 5.0}},
                            torch::kFloat64);
 auto nearest = interpolate(t, query);
 auto smooth = interpolate(t, query, InterpMode::Multilinear);
+auto seamless = interpolate(t, query, InterpMode::ContinuousMultilinear);
 auto uniform = t.resample_uniform(2);
 ```
 
@@ -153,6 +154,16 @@ volume-weighted mean of the leaves inside the finest cell that contains the
 query and at least one leaf (useful after `drop_empty` refinement, which leaves
 point-free children uncovered). `other.resample_to(t)` aligns another tensor to
 `t`'s leaves; addition requires identical topology.
+
+`ContinuousMultilinear` (opt-in) gives every leaf a tent
+`phi_i(x) = prod_d max(0, 1 - |x_d - c_id| / s_id)` (centre `c_i`, edge `s_i`)
+and returns `sum_i phi_i(x) v_i / sum_i phi_i(x)` for queries inside a leaf.
+Unlike `Multilinear`, whose averaging box takes the containing leaf's size and
+can jump where that level changes, it is continuous everywhere inside the
+leaves, including across level changes. It reproduces constants, equals
+`Multilinear` where all nearby leaves share one level, and is differentiable in
+the features. Near level changes it is a weighted average that does not
+reproduce linear fields exactly.
 
 Uniform resampling can expand a sparse hierarchy dramatically. The
 benchmark skips expansions above five million voxels; estimate the output

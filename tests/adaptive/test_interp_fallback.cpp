@@ -204,3 +204,24 @@ TEST(interp_fallback_cuda_matches_cpu) {
         CHECK_ALLCLOSE(b.cpu(), a, 1e-12, 1e-12);
     }
 }
+
+TEST(interp_fallback_continuous_mode) {
+    // ContinuousMultilinear + CoarserAncestor: covered points keep the tent result exactly,
+    // uncovered points get the same ancestor mean as in Nearest mode.
+    auto [pts, feats] = clustered_points(3000, 21);
+    auto t = AdaptiveSparseTensor::from_points(pts, feats, fb_config(4));
+    t.refine_by_density(4, true);
+    torch::manual_seed(22);
+    auto q = torch::rand({2000, 3}, torch::kFloat64) * 36.0 - 6.0;
+    auto c0 = interpolate(t, q, InterpMode::ContinuousMultilinear);
+    auto c1 = interpolate(t, q, InterpMode::ContinuousMultilinear, InterpFallback::CoarserAncestor);
+    auto n1 = interpolate(t, q, InterpMode::Nearest, InterpFallback::CoarserAncestor);
+    auto ones = t.with_features(torch::ones({t.size(), 1}, torch::kFloat64));
+    auto covered = interpolate(ones, q, InterpMode::Nearest).squeeze(1) > 0.5;
+    auto uncovered = covered.logical_not();
+    CHECK(covered.any().item<bool>());
+    CHECK(uncovered.any().item<bool>());
+    CHECK_ALLCLOSE(c1.index({covered}), c0.index({covered}), 0.0, 0.0);
+    CHECK_ALLCLOSE(c1.index({uncovered}), n1.index({uncovered}), 1e-12, 1e-12);
+    CHECK((c1.index({uncovered}).abs().sum() > 0).item<bool>());
+}
