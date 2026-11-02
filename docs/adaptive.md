@@ -135,7 +135,17 @@ calls. `KernelMapCache::instance().clear()` releases both. On CUDA the scatter-a
 `index_add_`, whose floating-point atomics make results vary in the last bits between runs;
 call `torch::globalContext().setDeterministicAlgorithms(true, false)` for bit-reproducible
 outputs (slower), as for any PyTorch scatter.
-On CUDA, consecutive kernel slots are processed in groups whose temporaries fit 32 MiB
+On CUDA, float and double convolutions run as fused gather-GEMM-scatter kernels: one launch
+covers every kernel slot for the forward pass, one for the input gradient and one for the
+weight gradient (`MinkowskiEngine/adaptive/fused_apply_cuda.cu`). No `[pairs, C]` gather or
+product is allocated or kept for backward, so peak memory is the inputs, outputs and the
+index arrays. Each map's pairs are cut into per-slot row tiles once per device (cached with the
+index arrays). Narrow channels (up to ~16) use small square tiles; wider ones use
+register-blocked 64 x 64 tiles. Results are accumulated atomically, so, as with `index_add_`,
+the last bits vary between runs (the tests check that float32 errors against float64 stay
+within twice those of the per-slot path). `detail::cuda_apply_map_fused() = false` turns the
+fused kernels off. Deterministic mode, other dtypes and the CPU always use the per-slot path:
+consecutive kernel slots are processed in groups whose temporaries fit 32 MiB
 (`detail::cuda_apply_map_group_bytes()`, 0 = one group), so peak memory does not grow with the
 whole kernel map.
 `output_level_shift > 0` is currently unsupported.
