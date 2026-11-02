@@ -296,7 +296,7 @@ struct Split {
   }
 };
 
-// first_x stays empty when the topology does not split into at least two parts.
+// first_x is empty only for an empty topology; a topology that does not split is one part.
 Split split_parts(const Topology &t, int r) {
   Split s;
   std::vector<int64_t> xs(static_cast<size_t>(t.size()));
@@ -307,8 +307,6 @@ Split split_parts(const Topology &t, int r) {
   for (size_t j = 0; j < xs.size(); ++j)
     if (j == 0 || xs[j] - xs[j - 1] > r)
       s.first_x.push_back(xs[j]);
-  if (s.first_x.size() < 2)
-    s.first_x.clear();
   return s;
 }
 

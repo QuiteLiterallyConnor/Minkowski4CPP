@@ -92,8 +92,9 @@ AdaptiveKernelMap build_adaptive_kernel_map(const AdaptiveSparseTensor &input,
 // which gives every batch a new topology and so a full map build, although each sample's
 // part of the map is the same every time it appears. With part reuse, a topology whose leaves
 // fall into groups separated along the first axis by at least (kernel_size - 1) / 2 empty
-// level-0 cells is split into those parts. No tap can reach from one part into another, so
-// the map is the union of the parts' maps. Each part is matched by content (its leaf keys,
+// level-0 cells is split into those parts (a topology that does not split is one part, so
+// repeated single samples, e.g. a validation set evaluated every epoch, are reused as well).
+// No tap can reach from one part into another, so the map is the union of the parts' maps. Each part is matched by content (its leaf keys,
 // translated by whole level-0 cells, plus D, max_depth, base voxel size and the kernel
 // config) against maps kept from earlier batches; the batch map is then put together from
 // them instead of searched again. The result is identical to a full build, pair for pair:

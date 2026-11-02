@@ -226,7 +226,8 @@ KernelMapCache::instance().set_part_reuse_bytes(size_t(512) << 20); // 0 = off (
 ```
 
 A topology whose leaves form groups separated along the first axis by at least
-`(kernel_size - 1) / 2` empty level-0 cells is split into those groups; each group is
+`(kernel_size - 1) / 2` empty level-0 cells is split into those groups (a topology that does
+not split is one group, so single samples seen again, such as a validation set, are reused too); each group is
 matched by content (its keys moved to start at level-0 x 0) against the groups of earlier
 batches, and the batch map is assembled from their maps. The result equals a full
 build exactly. It applies to `CenterSampled` and `VolumeWeighted`; stored groups are

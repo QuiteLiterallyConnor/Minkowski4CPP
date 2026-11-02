@@ -48,16 +48,16 @@ AdaptiveSparseTensor make_sample(int seed, int D, const AdaptiveVoxelConfig &cfg
     return t;
 }
 
-// Samples side by side along the first axis: sample k moved by `stride` * k level-0 cells.
+// Samples side by side along the first axis: sample k moved by start + stride * k level-0 cells.
 AdaptiveSparseTensor make_batch(const std::vector<AdaptiveSparseTensor> &samples,
                                 const std::vector<int> &order, int64_t stride,
-                                const AdaptiveVoxelConfig &cfg) {
+                                const AdaptiveVoxelConfig &cfg, int64_t start = 0) {
     std::vector<at::Tensor> cs, ls, fs;
     for (size_t k = 0; k < order.size(); ++k) {
         const auto &s = samples[order[k]];
         auto c = s.coordinates().clone();
         auto shift = (torch::pow(2.0, s.levels().to(torch::kFloat64)) *
-                      static_cast<double>(stride * static_cast<int64_t>(k)))
+                      static_cast<double>(start + stride * static_cast<int64_t>(k)))
                          .to(torch::kInt64);
         c.select(1, 0).add_(shift);
         cs.push_back(c);
@@ -144,7 +144,8 @@ TEST(part_reuse_matches_full_build_modes_shifts_kernels) {
     }
 }
 
-// Too small a gap (a tap could reach the next sample) or a single sample: no split.
+// Too small a gap (a tap could reach the next sample): the two samples stay one part. A single
+// sample is one part as well, and is matched again wherever it reappears.
 TEST(part_reuse_needs_a_gap_wider_than_the_kernel_radius) {
     const auto cfg = make_config(3, 2.0, 0.0);
     std::vector<AdaptiveSparseTensor> samples{make_sample(1, 3, cfg), make_sample(2, 3, cfg)};
@@ -152,16 +153,23 @@ TEST(part_reuse_needs_a_gap_wider_than_the_kernel_radius) {
         AdaptiveKernelConfig kc;
         kc.kernel_size = K;
         const int r = (K - 1) / 2;
-        // Samples occupy level-0 x cells 0..3, so a stride of 3 + r leaves r empty cells.
+        // Samples occupy level-0 x cells 0..3, so a stride of 3 + r leaves r - 1 empty cells.
         auto tight = make_batch(samples, {0, 1}, 3 + r, cfg);
         auto single = make_batch(samples, {0}, 4, cfg);
-        const auto et = full_build(tight, kc), es = full_build(single, kc);
+        auto moved = make_batch(samples, {0}, 4, cfg, 1000);
+        const auto et = full_build(tight, kc), es = full_build(single, kc),
+                   em = full_build(moved, kc);
         PartReuse on(size_t(1) << 30);
         auto &cache = KernelMapCache::instance();
-        check_same_entry(cache.get_or_build(tight, kc), et);
-        check_same_entry(cache.get_or_build(single, kc), es);
-        const auto st = cache.stats();
-        CHECK_EQ(st.part_hits + st.part_misses, size_t(0));
+        check_same_entry(cache.get_or_build(tight, kc), et); // one part, new
+        auto st = cache.stats();
+        CHECK_EQ(st.part_hits, size_t(0));
+        CHECK_EQ(st.part_misses, size_t(1));
+        check_same_entry(cache.get_or_build(single, kc), es); // one part, new
+        check_same_entry(cache.get_or_build(moved, kc), em);  // the same sample, moved: reused
+        st = cache.stats();
+        CHECK_EQ(st.part_hits, size_t(1));
+        CHECK_EQ(st.part_misses, size_t(2));
     }
 }
 
