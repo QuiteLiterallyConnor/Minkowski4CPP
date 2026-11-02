@@ -1,5 +1,6 @@
 
 #include "instance_norm_fn.hpp"
+#include "manager_holder.hpp"
 
 namespace minkowski {
 
@@ -130,7 +131,7 @@ at::Tensor InstanceNormFunction::forward(
   ctx->saved_data["glob_key_stride"] = pack_stride(glob_key->get_key().first);
   ctx->saved_data["glob_key_str_id"] = glob_key->get_key().second;
   ctx->saved_data["glob_key_coord_size"] = static_cast<int64_t>(glob_key->get_coordinate_size());
-  ctx->saved_data["manager_ptr"] = reinterpret_cast<int64_t>(mgr);
+  ctx->saved_data["manager"] = autograd_detail::pack_manager(manager);
   ctx->saved_data["gpooling_mode"] = static_cast<int64_t>(gpooling_mode);
 
   return norm_feat;
@@ -151,8 +152,9 @@ torch::autograd::variable_list InstanceNormFunction::backward(
     {unpack_stride(ctx->saved_data["glob_key_stride"]),
      ctx->saved_data["glob_key_str_id"].toStringRef()});
 
-  auto *manager = reinterpret_cast<CoordinateManager *>(
-      ctx->saved_data["manager_ptr"].toInt());
+  const auto manager_ref =
+      autograd_detail::unpack_manager(ctx->saved_data["manager"]);
+  auto *manager = manager_ref.get();
   auto gpooling_mode = static_cast<PoolingMode::Type>(
       ctx->saved_data["gpooling_mode"].toInt());
 

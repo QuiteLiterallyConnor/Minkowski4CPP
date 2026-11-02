@@ -1,4 +1,5 @@
 #include "convolution_fn.hpp"
+#include "manager_holder.hpp"
 #include <stdexcept>
 
 namespace minkowski {
@@ -77,7 +78,7 @@ at::Tensor ConvolutionFunction::forward(
   ctx->saved_data["in_key_coord_size"] = static_cast<int64_t>(in_key->get_coordinate_size());
   ctx->saved_data["out_key_coord_size"] = static_cast<int64_t>(out_key->get_coordinate_size());
 
-  ctx->saved_data["manager_ptr"] = reinterpret_cast<int64_t>(manager.get());
+  ctx->saved_data["manager"] = autograd_detail::pack_manager(manager);
 
   return out_feat;
 }
@@ -107,8 +108,9 @@ torch::autograd::variable_list ConvolutionFunction::backward(
   CoordinateMapKey in_key(in_coord_size, {in_key_stride, in_key_str_id});
   CoordinateMapKey out_key(out_coord_size, {out_key_stride, out_key_str_id});
 
-  auto *manager = reinterpret_cast<CoordinateManager *>(
-      ctx->saved_data["manager_ptr"].toInt());
+  const auto manager_ref =
+      autograd_detail::unpack_manager(ctx->saved_data["manager"]);
+  auto *manager = manager_ref.get();
 
   at::Tensor grad_out_feat = grad_outputs[0].contiguous();
 
@@ -216,7 +218,7 @@ at::Tensor ConvolutionTransposeFunction::forward(
   ctx->saved_data["out_key_stride"] = pack_stride(out_key->get_key().first);
   ctx->saved_data["in_key_coord_size"] = static_cast<int64_t>(in_key->get_coordinate_size());
   ctx->saved_data["out_key_coord_size"] = static_cast<int64_t>(out_key->get_coordinate_size());
-  ctx->saved_data["manager_ptr"] = reinterpret_cast<int64_t>(manager.get());
+  ctx->saved_data["manager"] = autograd_detail::pack_manager(manager);
 
   return out_feat;
 }
@@ -246,8 +248,9 @@ torch::autograd::variable_list ConvolutionTransposeFunction::backward(
   CoordinateMapKey in_key(in_coord_size, {in_key_stride, in_key_str_id});
   CoordinateMapKey out_key(out_coord_size, {out_key_stride, out_key_str_id});
 
-  auto *manager = reinterpret_cast<CoordinateManager *>(
-      ctx->saved_data["manager_ptr"].toInt());
+  const auto manager_ref =
+      autograd_detail::unpack_manager(ctx->saved_data["manager"]);
+  auto *manager = manager_ref.get();
 
   at::Tensor grad_out_feat = grad_outputs[0].contiguous();
 
