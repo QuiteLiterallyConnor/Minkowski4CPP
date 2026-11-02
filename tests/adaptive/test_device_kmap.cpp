@@ -100,6 +100,31 @@ TEST(device_kmap_cuda_matches_per_slot_reference) {
     check_against_reference(torch::kCUDA, torch::kFloat32, 1e-4);
 }
 
+namespace {
+
+// Restores the CUDA apply_map group budget when a test ends.
+struct GroupBytes {
+    int64_t saved;
+    explicit GroupBytes(int64_t v)
+        : saved(minkowski::adaptive::detail::cuda_apply_map_group_bytes()) {
+        minkowski::adaptive::detail::cuda_apply_map_group_bytes() = v;
+    }
+    ~GroupBytes() { minkowski::adaptive::detail::cuda_apply_map_group_bytes() = saved; }
+};
+
+}  // namespace
+
+TEST(device_kmap_cuda_slot_groups_match_reference) {
+    if (!torch::cuda::is_available()) return;
+    // 0: one group for all slots; 1 byte: every slot its own group; 4 KiB: several slots per
+    // group with group boundaries inside the map (the test maps have ~10^3-10^4 pairs).
+    for (int64_t bytes : {int64_t(0), int64_t(1), int64_t(4096)}) {
+        GroupBytes guard(bytes);
+        check_against_reference(torch::kCUDA, torch::kFloat64, 1e-12);
+        check_against_reference(torch::kCUDA, torch::kFloat32, 1e-4);
+    }
+}
+
 TEST(device_kmap_cache_uploads_once_per_device_and_dtype) {
     auto t = mixed_tensor(2, torch::kFloat64);
     AdaptiveKernelConfig kc;

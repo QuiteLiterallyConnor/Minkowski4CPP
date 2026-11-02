@@ -135,6 +135,9 @@ calls. `KernelMapCache::instance().clear()` releases both. On CUDA the scatter-a
 `index_add_`, whose floating-point atomics make results vary in the last bits between runs;
 call `torch::globalContext().setDeterministicAlgorithms(true, false)` for bit-reproducible
 outputs (slower), as for any PyTorch scatter.
+On CUDA, consecutive kernel slots are processed in groups whose temporaries fit 32 MiB
+(`detail::cuda_apply_map_group_bytes()`, 0 = one group), so peak memory does not grow with the
+whole kernel map.
 `output_level_shift > 0` is currently unsupported.
 
 ## Pooling, interpolation, and resampling

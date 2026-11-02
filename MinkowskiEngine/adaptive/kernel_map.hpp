@@ -70,6 +70,14 @@ struct KernelMapEntry {
   std::shared_ptr<KernelMapDeviceCache> device = std::make_shared<KernelMapDeviceCache>();
 };
 
+namespace detail {
+// Byte budget of the CUDA apply_map's per-group temporaries (gathered rows plus two copies of
+// their products). Consecutive kernel slots are processed together while their pairs fit;
+// a slot larger than the budget is its own group. Default 32 MiB; 0 = one group for all
+// slots. Process-wide tuning/test hook; set it before convolutions run, not concurrently.
+int64_t &cuda_apply_map_group_bytes();
+} // namespace detail
+
 // Kernel slot of an offset in {-r..r}^D, r = (kernel_size-1)/2, first dimension slowest.
 int64_t kernel_index(std::array<int, 3> offset, int kernel_size);
 

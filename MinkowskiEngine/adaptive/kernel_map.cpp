@@ -237,6 +237,13 @@ KernelMapDeviceCache::Arrays KernelMapDeviceCache::get(const AdaptiveKernelMap &
   return a;
 }
 
+namespace detail {
+int64_t &cuda_apply_map_group_bytes() {
+  static int64_t bytes = int64_t(32) << 20;
+  return bytes;
+}
+} // namespace detail
+
 struct KernelMapCache::Impl {
   mutable std::mutex mutex;
   std::map<CacheKey, KernelMapEntry> entries;
