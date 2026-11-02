@@ -50,8 +50,9 @@ void compare_devices(MakeModule make, bool has_kernel, int64_t cin, uint64_t see
     auto coords = core_test::random_coords(300, 12, 2, 3, seed);
     torch::manual_seed(seed);
     auto feats = torch::randn({coords.size(0), cin}, torch::kFloat32);
-    auto cpu = run_on(torch::kCPU, coords, feats, make, has_kernel);
-    auto gpu = run_on(torch::kCUDA, coords, feats, make, has_kernel);
+    // Concrete type: `auto` here is dependent, and CHECK_ALLCLOSE calls .item<double>() on it.
+    Run cpu = run_on(torch::kCPU, coords, feats, make, has_kernel);
+    Run gpu = run_on(torch::kCUDA, coords, feats, make, has_kernel);
     CHECK_EQ(cpu.out_sorted.size(0), gpu.out_sorted.size(0));
     CHECK_ALLCLOSE(cpu.out_sorted, gpu.out_sorted, tol, tol);
     CHECK_ALLCLOSE(cpu.grad_feats, gpu.grad_feats, tol, tol);
