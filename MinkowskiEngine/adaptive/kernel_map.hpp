@@ -71,8 +71,8 @@ struct KernelMapEntry {
 };
 
 namespace detail {
-// Byte budget of the CUDA apply_map's per-group temporaries (gathered rows plus two copies of
-// their products). Consecutive kernel slots are processed together while their pairs fit;
+// Byte budget of the CUDA apply_map's per-group temporaries (a group's products and their
+// concatenation). Consecutive kernel slots are processed together while their pairs fit;
 // a slot larger than the budget is its own group. Default 32 MiB; 0 = one group for all
 // slots. Process-wide tuning/test hook; set it before convolutions run, not concurrently.
 int64_t &cuda_apply_map_group_bytes();
