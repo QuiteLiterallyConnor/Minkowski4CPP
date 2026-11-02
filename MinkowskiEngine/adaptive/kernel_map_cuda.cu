@@ -8,6 +8,8 @@
 #include <c10/cuda/CUDAException.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
+
 namespace minkowski {
 namespace adaptive {
 namespace detail {
