@@ -5,6 +5,9 @@ Run the native test suites under memory-safety tools and summarise the findings.
 
 Each job is "<tool>:<suite>[:<filter>]":
   tool   memcheck | racecheck | initcheck | synccheck  (NVIDIA compute-sanitizer, CUDA builds)
+         plain                                         (no tool: CUDA_LAUNCH_BLOCKING=1 + uncached CUDA allocator, so a
+                                                         device fault is reported at the faulting kernel; a weak
+                                                         fallback where compute-sanitizer is unavailable)
          asan                                          (run the suite directly; the build must use /fsanitize=address,
                                                          see ASan notes below)
   suite  test executable in -BuildDir (adaptive_tests, gaussian_tests, core_tests, ...)
@@ -61,7 +64,8 @@ foreach ($job in $Jobs) {
     $tag = "$tool-$suite" + $(if ($filter) { "-$filter" } else { '' })
     $log = Join-Path $OutDir "$tag.txt"
 
-    if ($tool -eq 'asan') {
+    $env:CUDA_LAUNCH_BLOCKING = $(if ($tool -eq 'plain') { '1' } else { $null })
+    if ($tool -in 'asan', 'plain') {
         $file = $exe; $argList = @()
     } else {
         if ($tool -notin 'memcheck', 'racecheck', 'initcheck', 'synccheck') { throw "unknown tool: $tool" }
@@ -99,6 +103,8 @@ foreach ($job in $Jobs) {
     $tp, $tf, $ts = if ($m.Success) { $m.Groups[1].Value, $m.Groups[2].Value, $m.Groups[3].Value } else { '', '', '' }
     $errs = if ($tool -eq 'asan') {
         ([regex]::Matches($text, 'ERROR: AddressSanitizer')).Count
+    } elseif ($tool -eq 'plain') {
+        ([regex]::Matches($text, 'illegal memory access|misaligned address|unspecified launch failure|device-side assert')).Count
     } else {
         $e = [regex]::Match($text, 'ERROR SUMMARY: (\d+) error')
         if ($e.Success) { [int]$e.Groups[1].Value } else { -1 }
@@ -108,7 +114,7 @@ foreach ($job in $Jobs) {
     if ($status -eq 'done' -and -not $m.Success) { $status = 'NO-SUMMARY' }
     # On Windows/WDDM compute-sanitizer needs the GPU debugger interface (EnableDebuggerInterface.bat, admin).
     # Without it the tool prints init errors and the suite runs UNCHECKED - never report that as clean.
-    if ($tool -ne 'asan' -and $text -match 'Failed to initialize WDDM debugger interface|Device not supported') {
+    if ($tool -notin 'asan', 'plain' -and $text -match 'Failed to initialize WDDM debugger interface|Device not supported') {
         $status = 'SANITIZER-UNAVAILABLE'
     }
     "$tool,$suite,$filter,$rc,$sec,$tp,$tf,$ts,$errs,$leakBytes,$status" | Add-Content $summary
