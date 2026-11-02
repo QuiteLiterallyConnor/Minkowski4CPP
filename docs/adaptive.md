@@ -147,7 +147,11 @@ interpolation averages the leaves overlapping a box the size of the containing
 leaf, centred on the query: it is continuous inside a level and across faces
 between equal-level leaves, but the box size changes where the containing
 leaf's level changes, so values can jump there. Queries outside every leaf
-return zeros. `other.resample_to(t)` aligns another tensor to
+return zeros, or with
+`interpolate(t, query, mode, InterpFallback::CoarserAncestor)` the
+volume-weighted mean of the leaves inside the finest cell that contains the
+query and at least one leaf (useful after `drop_empty` refinement, which leaves
+point-free children uncovered). `other.resample_to(t)` aligns another tensor to
 `t`'s leaves; addition requires identical topology. Both tensors must share
 `origin` and `base_voxel_size` (`max_depth` may differ). Finer leaves are
 reduced exactly like `coarsen` (so `Mean` averages occupied children level by
