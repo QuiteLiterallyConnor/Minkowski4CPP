@@ -51,6 +51,28 @@ void project_backward_cuda(const at::Tensor &positions, const at::Tensor &rotati
 // path is used when the camera pose requires grad). Process-wide tuning/test hook.
 bool &cuda_fused_projection();
 
+// Fused culling and tile lists of render_gaussians (gaussian_cull_cuda.cu); same float32 math as the
+// LibTorch path. cull_cuda reads proj [N,10] (the fused projection's output) and opacity [N] and
+// writes visible [N] bool, radius [N] int64 (0 when culled), bounds [N,4] int64 (first/last tile
+// column, first/last tile row; zeros when culled) and counts [N] int64 (tiles touched, 0 when culled).
+struct CullParams {
+  float near_plane, min_alpha, extent_slack, width, height;
+  int64_t tile, max_col, max_row;
+};
+void cull_cuda(const at::Tensor &proj, const at::Tensor &opacity, const CullParams &params,
+               at::Tensor &visible, at::Tensor &radius, at::Tensor &bounds, at::Tensor &counts);
+// Tile lists from depth-ordered bounds [M,4]: counts [M] = tiles per Gaussian; keys [total] =
+// tile * M + row at each Gaussian's exclusive prefix offset; after sorting the keys,
+// finish_tile_lists_cuda writes ids [total] int32 and ranges [tiles,2] int32.
+void tile_counts_cuda(const at::Tensor &bounds, at::Tensor &counts);
+void tile_keys_cuda(const at::Tensor &bounds, const at::Tensor &offsets, int64_t cols,
+                    at::Tensor &keys);
+void finish_tile_lists_cuda(const at::Tensor &keys, int64_t m, int64_t tiles, at::Tensor &ids,
+                            at::Tensor &ranges);
+// Whether render_gaussians uses these kernels for CUDA inputs (default on). Process-wide
+// tuning/test hook.
+bool &cuda_fused_tiles();
+
 void covariance_cuda(const at::Tensor &rotations, const at::Tensor &scales,
                      at::Tensor &output);
 

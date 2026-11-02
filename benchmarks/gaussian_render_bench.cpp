@@ -8,6 +8,7 @@
 //       [--counts 5000,20000,0] (0 = all splats) [--sizes 128,512]
 //       [--devices cpu,cuda,cuda-torch] [--warmup 2] [--iterations 5]
 //       [--fused-projection 0|1] (CUDA projection kernels, default 1)
+//       [--fused-tiles 0|1] (CUDA culling and tile-list kernels, default 1)
 //       [--train] [--label name] [--output results.json]
 //       [--dump-grads prefix] [--compare-grads prefix]
 //
@@ -233,6 +234,8 @@ int main(int argc, char **argv) {
 #ifdef USE_CUDA
       else if (a == "--fused-projection") // 0: LibTorch projection, 1: fused CUDA (default)
         minkowski::gaussian::detail::cuda_fused_projection() = std::stoi(next()) != 0;
+      else if (a == "--fused-tiles") // 0: LibTorch culling and tile lists, 1: CUDA kernels
+        minkowski::gaussian::detail::cuda_fused_tiles() = std::stoi(next()) != 0;
 #endif
       else if (a == "--label")
         label = next();

@@ -203,7 +203,20 @@ void build_tile_lists(const at::Tensor &bounds, int64_t rows, int64_t cols,
   const auto x0 = bounds.select(1, 0), x1 = bounds.select(1, 1);
   const auto y0 = bounds.select(1, 2), y1 = bounds.select(1, 3);
   const auto widths = x1 - x0 + 1;
-  const auto counts = widths * (y1 - y0 + 1);
+#ifdef USE_CUDA
+  const bool fused = bounds.is_cuda() && detail::cuda_fused_tiles();
+#else
+  const bool fused = false;
+#endif
+  at::Tensor counts;
+  if (fused) {
+#ifdef USE_CUDA
+    counts = at::empty({m}, long_options);
+    detail::tile_counts_cuda(bounds.contiguous(), counts);
+#endif
+  } else {
+    counts = widths * (y1 - y0 + 1);
+  }
   const int64_t total = m > 0 ? counts.sum().item<int64_t>() : 0;
   // The fused CPU and CUDA rasterizers index pairs and Gaussians with int32.
   TORCH_CHECK(total <= std::numeric_limits<int32_t>::max() &&
@@ -216,6 +229,19 @@ void build_tile_lists(const at::Tensor &bounds, int64_t rows, int64_t cols,
     ranges = at::zeros({tiles, 2}, bounds.options().dtype(at::kInt));
     return;
   }
+#ifdef USE_CUDA
+  if (fused) {
+    // Same keys as below, written per Gaussian at its prefix offset; one kernel then splits the
+    // sorted keys into rows and tile ranges.
+    auto keys = at::empty({total}, long_options);
+    detail::tile_keys_cuda(bounds.contiguous(), at::cumsum(counts, 0) - counts, cols, keys);
+    keys = std::get<0>(keys.sort());
+    ids = at::empty({total}, bounds.options().dtype(at::kInt));
+    ranges = at::empty({tiles, 2}, bounds.options().dtype(at::kInt));
+    detail::finish_tile_lists_cuda(keys, m, tiles, ids, ranges);
+    return;
+  }
+#endif
   const auto gid = at::repeat_interleave(at::arange(m, long_options), counts);
   const auto offsets = at::cumsum(counts, 0) - counts;
   const auto local = at::arange(total, long_options) - offsets.index_select(0, gid);
@@ -533,6 +559,10 @@ bool &cuda_fused_projection() {
   static bool on = true;
   return on;
 }
+bool &cuda_fused_tiles() {
+  static bool on = true;
+  return on;
+}
 } // namespace detail
 #endif
 
@@ -601,9 +631,10 @@ RenderOutput render_gaussians(const at::Tensor &positions,
 #else
   const bool fused_projection = false;
 #endif
+  at::Tensor proj;
   if (fused_projection) {
 #ifdef USE_CUDA
-    const auto proj = FusedProjectFunction::apply(
+    proj = FusedProjectFunction::apply(
         positions, rotations, scales, world_to_camera.slice(0, 0, 3),
         std::vector<double>{camera.fx, camera.fy, camera.cx, camera.cy,
                             static_cast<double>(camera.near_plane), tx_lo, tx_hi, ty_lo,
@@ -664,6 +695,34 @@ RenderOutput render_gaussians(const at::Tensor &positions,
   }
 
   at::Tensor radii_long, visible, order_ids, bounds, tile_pairs;
+  const auto max_col = (width + tile_size - 1) / tile_size - 1;
+  const auto max_row = (height + tile_size - 1) / tile_size - 1;
+#ifdef USE_CUDA
+  if (fused_projection && detail::cuda_fused_tiles()) {
+    // One kernel for the culling arithmetic below, the radii and every Gaussian's tile bounds.
+    torch::NoGradGuard no_grad;
+    const auto long_options = float_options.dtype(at::kLong);
+    visible = at::empty({n}, float_options.dtype(at::kBool));
+    radii_long = at::empty({n}, long_options);
+    auto all_bounds = at::empty({n, 4}, long_options);
+    auto counts = at::empty({n}, long_options);
+    const detail::CullParams k{static_cast<float>(camera.near_plane),
+                               kMinAlpha,
+                               static_cast<float>(kExtentSlack),
+                               static_cast<float>(width),
+                               static_cast<float>(height),
+                               tile_size,
+                               max_col,
+                               max_row};
+    detail::cull_cuda(proj.detach(), opacities.detach().reshape({-1}).contiguous(), k, visible,
+                      radii_long, all_bounds, counts);
+    const auto ids = visible.nonzero().squeeze(1);
+    const auto order = z.detach().index_select(0, ids).argsort(/*stable=*/true, 0, false);
+    order_ids = ids.index_select(0, order);
+    bounds = all_bounds.index_select(0, order_ids);
+    tile_pairs = counts.sum();
+  } else
+#endif
   {
     torch::NoGradGuard no_grad;
     // A pixel at Mahalanobis distance m gets alpha = o * exp(-m^2 / 2), which
@@ -699,8 +758,6 @@ RenderOutput render_gaussians(const at::Tensor &positions,
     const auto srx = radius_x.index_select(0, order_ids);
     const auto sry = radius_y.index_select(0, order_ids);
     const double tile = static_cast<double>(tile_size);
-    const auto max_col = (width + tile_size - 1) / tile_size - 1;
-    const auto max_row = (height + tile_size - 1) / tile_size - 1;
     bounds = at::stack(
         {at::floor((sx - srx) / tile).clamp(0, max_col).to(at::kLong),
          at::floor((sx + srx) / tile).clamp(0, max_col).to(at::kLong),
