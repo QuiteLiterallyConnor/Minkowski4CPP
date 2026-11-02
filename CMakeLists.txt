@@ -192,6 +192,11 @@ file(GLOB MINK_AUTOGRAD_SOURCES CONFIGURE_DEPENDS
 list(APPEND MINK_DUAL_BACKEND_SOURCES ${MINK_AUTOGRAD_SOURCES})
 
 if(CPU_ONLY)
+    # The unified .cu implementation below includes the CPU backend. Retaining
+    # the legacy .cpp implementation creates duplicate CoordinateManager symbols
+    # when a static-library consumer needs symbols from both translation units.
+    list(REMOVE_ITEM MINK_CPU_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/coordinate_manager.cpp")
     set_source_files_properties(${MINK_DUAL_BACKEND_SOURCES}
         PROPERTIES LANGUAGE CXX)
     if(MSVC)
