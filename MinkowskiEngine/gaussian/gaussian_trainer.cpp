@@ -134,7 +134,7 @@ void GaussianTrainer::adam_step() {
                                  static_cast<float>(1.0 - config_.beta1),
                                  static_cast<float>(config_.beta2),
                                  static_cast<float>(1.0 - config_.beta2),
-                                 1.0f / static_cast<float>(bias2),
+                                 detail::adam_inverse_bias2(bias2),
                                  static_cast<float>(config_.epsilon),
                                  static_cast<float>(-learning_rate(i) / bias1)};
       at::Tensor param = p;

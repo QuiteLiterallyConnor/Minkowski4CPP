@@ -2,6 +2,7 @@
 #define MINKOWSKI_GAUSSIAN_GAUSSIAN_CUDA_HPP
 
 #include <ATen/ATen.h>
+#include <torch/version.h>
 
 namespace minkowski {
 namespace gaussian {
@@ -35,6 +36,15 @@ void rasterize_backward_cuda(const at::Tensor &attrs, const at::Tensor &ids,
 struct AdamParams {
   float beta1, one_minus_beta1, beta2, one_minus_beta2, inv_bias2, epsilon, step;
 };
+// Match ATen's CUDA division by a CPU scalar. LibTorch 2.10 changed the reciprocal
+// calculation from float32 to float64 before casting to the tensor's scalar type.
+inline float adam_inverse_bias2(double bias2) {
+#if TORCH_VERSION_MAJOR > 2 || (TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR >= 10)
+  return static_cast<float>(1.0 / bias2);
+#else
+  return 1.0f / static_cast<float>(bias2);
+#endif
+}
 void adam_update_cuda(at::Tensor &param, const at::Tensor &grad, at::Tensor &moment1,
                       at::Tensor &moment2, const AdamParams &params);
 // Whether GaussianTrainer uses the fused update for CUDA parameters (default on). Process-wide

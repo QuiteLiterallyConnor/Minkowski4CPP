@@ -22,12 +22,15 @@ __global__ void adam_kernel(int64_t n, float *__restrict__ p, const float *__res
        i += static_cast<int64_t>(gridDim.x) * blockDim.x) {
     const float gi = g[i];
     // m1 = beta1 m1 + (1 - beta1) g;  m2 = beta2 m2 + (1 - beta2) g^2
-    const float a = m1[i] * k.beta1 + k.one_minus_beta1 * gi;
-    const float b = m2[i] * k.beta2 + k.one_minus_beta2 * gi * gi;
+    // Each mul_ in the LibTorch path stores a rounded float before add_/addcmul_.
+    // Preserve those rounding boundaries, and square g before scaling it, as addcmul_ does.
+    const float a = fmaf(k.one_minus_beta1, gi, __fmul_rn(m1[i], k.beta1));
+    const float b = fmaf(k.one_minus_beta2, __fmul_rn(gi, gi),
+                         __fmul_rn(m2[i], k.beta2));
     m1[i] = a;
     m2[i] = b;
     // p += step * m1 / (sqrt(m2 / bias2) + eps), step = -lr / bias1
-    p[i] += k.step * (a / (sqrtf(b * k.inv_bias2) + k.epsilon));
+    p[i] = fmaf(k.step, a / (sqrtf(b * k.inv_bias2) + k.epsilon), p[i]);
   }
 }
 

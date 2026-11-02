@@ -167,6 +167,7 @@ struct Record {
   double mean_alpha = 0.0;
   uint64_t cuda_peak_allocated_forward = 0, cuda_peak_allocated_backward = 0;
   uint64_t cuda_peak_reserved = 0, process_peak = 0;
+  uint64_t cuda_peak_allocated_train = 0, cuda_peak_reserved_train = 0;
   bool compared = false, grad_bit_identical = true;
   double grad_max_abs_diff = 0.0, grad_max_rel_diff = 0.0;
   Samples samples;
@@ -404,6 +405,8 @@ int main(int argc, char **argv) {
             }
           }
           if (train) {
+            sync(device);
+            reset_cuda_peak(device);
             auto model = base.clone();
             GaussianTrainerConfig config;
             config.densify = false;
@@ -419,6 +422,8 @@ int main(int argc, char **argv) {
               if (it >= warmup)
                 record.samples.train.push_back(elapsed_ms(t0));
             }
+            record.cuda_peak_allocated_train = cuda_peak(device).first;
+            record.cuda_peak_reserved_train = cuda_peak(device).second;
           }
           record.process_peak = process_peak_bytes();
           std::cerr << label << " " << device_name << " n=" << count << " "
@@ -454,6 +459,8 @@ int main(int argc, char **argv) {
            << ", \"cuda_peak_allocated_backward\": "
            << r.cuda_peak_allocated_backward
            << ", \"cuda_peak_reserved\": " << r.cuda_peak_reserved
+           << ", \"cuda_peak_allocated_train\": " << r.cuda_peak_allocated_train
+           << ", \"cuda_peak_reserved_train\": " << r.cuda_peak_reserved_train
            << ", \"process_peak_working_set\": " << r.process_peak << ", ";
       if (r.compared)
         file << "\"grad_bit_identical\": "
