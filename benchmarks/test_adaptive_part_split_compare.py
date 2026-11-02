@@ -1,7 +1,13 @@
 """Fail-closed regression checks for the portable paired benchmark runner."""
+import importlib.util
+from pathlib import Path
 import unittest
 
-from adaptive_part_split_compare import summarize
+spec = importlib.util.spec_from_file_location(
+    "adaptive_part_split_compare", Path(__file__).with_name("adaptive_part_split_compare.py"))
+comparison = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(comparison)
+summarize = comparison.summarize
 
 
 def fixture():

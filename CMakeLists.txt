@@ -539,6 +539,11 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
     enable_testing()
     add_test(NAME adaptive_tests COMMAND adaptive_tests)
     add_test(NAME adaptive_split_tests COMMAND adaptive_split_tests)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME adaptive_part_split_compare_tests
+            COMMAND "${Python3_EXECUTABLE}" -I -B "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/test_adaptive_part_split_compare.py")
+    endif()
     # Smoke run only (tiny sizes, one repetition): keeps the benchmark building and running.
     add_test(NAME adaptive_vs_uniform_bench_smoke
         COMMAND adaptive_vs_uniform_bench --datasets clustered,shell
