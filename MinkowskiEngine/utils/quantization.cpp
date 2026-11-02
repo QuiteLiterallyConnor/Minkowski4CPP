@@ -2,6 +2,7 @@
 #include "quantization.hpp"
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 namespace minkowski {
 
@@ -34,16 +35,28 @@ SparseQuantizeResult sparse_quantize(
 
   int64_t dimension = coordinates.size(1);
 
+  // Quantize like MinkowskiEngine: floor(coordinates / quantization_size) in float64.
+  // Integer coordinates without a quantization size are used as they are, so they stay exact
+  // (float32 cannot represent every integer above 2^24).
   at::Tensor discrete_coordinates;
-  if (quantization_size.has_value()) {
-    double qs = quantization_size.value();
-    if (qs != 1.0) {
-      discrete_coordinates = torch::floor(coordinates.to(torch::kFloat) / qs);
-    } else {
-      discrete_coordinates = torch::floor(coordinates.to(torch::kFloat));
-    }
+  const double qs = quantization_size.value_or(1.0);
+  TORCH_CHECK(qs > 0.0, "quantization_size must be positive, got ", qs);
+  if (!at::isFloatingType(coordinates.scalar_type()) && qs == 1.0) {
+    discrete_coordinates = coordinates;
   } else {
-    discrete_coordinates = torch::floor(coordinates.to(torch::kFloat));
+    auto scaled = coordinates.to(torch::kFloat64);
+    if (qs != 1.0) {
+      scaled = scaled / qs;
+    }
+    discrete_coordinates = torch::floor(scaled);
+  }
+  if (discrete_coordinates.numel() > 0) {
+    const double lo = discrete_coordinates.min().item<double>();
+    const double hi = discrete_coordinates.max().item<double>();
+    TORCH_CHECK(lo >= std::numeric_limits<int32_t>::min() &&
+                    hi <= std::numeric_limits<int32_t>::max(),
+                "Quantized coordinates [", lo, ", ", hi,
+                "] do not fit the int32 coordinate type.");
   }
   discrete_coordinates = discrete_coordinates.to(torch::kInt32);
 
@@ -93,7 +106,8 @@ SparseQuantizeResult sparse_quantize(
     result.inverse_mapping = inverse_map;
 
     if (use_feat) {
-      result.features = features->index({unique_map});
+      // unique_map lives on `device`; the features may be on another device.
+      result.features = features->index({unique_map.to(features->device())});
     }
   }
 
