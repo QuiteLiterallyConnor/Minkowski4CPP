@@ -180,6 +180,30 @@ endif()
 
 set(MINK_GPU_SOURCES)
 
+# These translation units carry the autograd functions and the coordinate
+# manager for both backends; their CUDA paths are guarded by CPU_ONLY, so a
+# CPU-only build compiles them as C++ instead of dropping them.
+set(MINK_DUAL_BACKEND_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/coordinate_manager.cu"
+)
+file(GLOB MINK_AUTOGRAD_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/autograd/*.cu"
+)
+list(APPEND MINK_DUAL_BACKEND_SOURCES ${MINK_AUTOGRAD_SOURCES})
+
+if(CPU_ONLY)
+    set_source_files_properties(${MINK_DUAL_BACKEND_SOURCES}
+        PROPERTIES LANGUAGE CXX)
+    if(MSVC)
+        set_source_files_properties(${MINK_DUAL_BACKEND_SOURCES}
+            PROPERTIES COMPILE_OPTIONS "/TP")
+    else()
+        set_source_files_properties(${MINK_DUAL_BACKEND_SOURCES}
+            PROPERTIES COMPILE_OPTIONS "-xc++")
+    endif()
+    list(APPEND MINK_CPU_SOURCES ${MINK_DUAL_BACKEND_SOURCES})
+endif()
+
 if(NOT CPU_ONLY)
 
     file(GLOB MINK_GPU_SOURCES CONFIGURE_DEPENDS
@@ -411,6 +435,9 @@ endif()
 
 if(MINK_BUILD_TESTS)
 
+    enable_testing()
+    add_subdirectory(tests/utils)
+
     add_executable(train
         tests/train.cpp
     )
@@ -448,17 +475,35 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_gradients.cpp
         tests/adaptive/test_regression.cpp
         tests/adaptive/test_sphere.cpp
+        tests/adaptive/test_overlap_descent.cpp
+        tests/adaptive/test_parallel_kmap.cpp
+        tests/adaptive/test_drop_empty.cpp
+        tests/adaptive/test_interp_fallback.cpp
+        tests/adaptive/test_coverage.cpp
     )
 
     add_executable(adaptive_bench
         tests/adaptive/bench_adaptive.cpp
     )
 
+    add_executable(adaptive_kmap_bench
+        tests/adaptive/bench_adaptive_kmap.cpp
+    )
+
     add_executable(sphere
         tests/sphere.cpp
     )
 
-    foreach(tgt adaptive_tests adaptive_bench sphere)
+    # Adaptive vs sparse-uniform voxelization benchmark (driver:
+    # tests/adaptive/run_adaptive_vs_uniform.py).
+    add_executable(adaptive_vs_uniform_bench
+        tests/adaptive/bench_adaptive_vs_uniform.cpp
+    )
+    target_compile_definitions(adaptive_vs_uniform_bench PRIVATE
+        MINK_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    )
+
+    foreach(tgt adaptive_tests adaptive_bench adaptive_kmap_bench sphere adaptive_vs_uniform_bench)
         target_link_libraries(${tgt} PRIVATE minkowski_cpp)
         target_include_directories(${tgt} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -478,6 +523,11 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
 
     enable_testing()
     add_test(NAME adaptive_tests COMMAND adaptive_tests)
+    # Smoke run only (tiny sizes, one repetition): keeps the benchmark building and running.
+    add_test(NAME adaptive_vs_uniform_bench_smoke
+        COMMAND adaptive_vs_uniform_bench --datasets clustered,shell
+                --methods u_coarse,u_fine,u_matched,a_roi,a_dens16,a_var
+                --points 3000 --ml-queries 200 --warmup 0 --reps 1)
 
 endif()
 
@@ -492,6 +542,8 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         tests/gaussian/test_gaussian_tensor.cpp
         tests/gaussian/test_gaussian_ply.cpp
         tests/gaussian/test_gaussian_render.cpp
+        tests/gaussian/test_gaussian_cpu_raster.cpp
+        tests/gaussian/test_gaussian_cuda_backward.cpp
     )
 
     target_compile_definitions(gaussian_tests PRIVATE
@@ -551,6 +603,24 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         )
         if(MINK_TORCH_CXX_FLAGS)
             target_compile_options(gaussian_ply_bench PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+
+        add_executable(gaussian_render_bench
+            benchmarks/gaussian_render_bench.cpp
+        )
+        target_link_libraries(gaussian_render_bench PRIVATE minkowski_cpp)
+        target_include_directories(gaussian_render_bench PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        )
+        target_compile_definitions(gaussian_render_bench PRIVATE
+            MINK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+            MINK_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(gaussian_render_bench PRIVATE
                 $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
             )
         endif()
