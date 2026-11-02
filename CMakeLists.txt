@@ -460,6 +460,13 @@ if(MINK_BUILD_TESTS)
         )
     endif()
 
+    # Self-test of the A/B comparison driver benchmarks/ab_compare.py (standard library only).
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME ab_compare_selftest
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_ab_compare.py)
+    endif()
+
 endif()
 
 # Adaptive voxelization tests and benchmark (see plan.txt).

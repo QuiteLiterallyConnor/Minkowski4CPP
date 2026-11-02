@@ -70,3 +70,32 @@ cmake --build build-sphere-benchmark --config Release
 Use the CUDA toolkit version that matches the installed MinkowskiEngine build. If the
 installed package and LibTorch are already discoverable through CMake's package search
 paths, their explicit directory options can be omitted.
+
+# A/B comparison of two builds (`ab_compare.py`)
+
+`benchmarks/ab_compare.py` (Python 3 standard library only) runs the same benchmark executable
+from two build directories alternately (A B A B ...), one fresh process per run, so that slow
+drift in machine load affects both sides equally. Example, original vs optimized adaptive
+convolution on CUDA:
+
+```powershell
+python benchmarks/ab_compare.py --a base=build-main --b new=build-branch --out ab --name conv20k `
+    --rounds 5 --warmup-rounds 1 -- adaptive_kmap_bench --conv cuda --n 20000 --depth 4 `
+    --channels 8 --cout 16 --modes center,volume --warmup 3 --reps 10
+```
+
+Per process it records the whole-process wall time (cold start: DLL load, CUDA context, first
+calls), peak working set and CPU time (Windows), device-wide GPU utilization and memory sampled
+with `nvidia-smi` every 200 ms (these include other processes on the GPU), every `key   value`
+line the benchmark prints and every number of the JSON file it writes when an argument contains
+`{json}`. `--extract key=REGEX` adds a number from free-form output (for example the epoch time
+of `train`). In-process warm-up and timed repeats stay the benchmark's own, so its warm
+(steady-state) timings and the process-level cold timing are reported separately.
+
+The run is resumable: `ab/NAME.json` keeps every run, and calling the command again adds rounds
+until `--rounds` timed rounds exist. `--budget-s` stops before a pair that would not fit (exit
+code 3) so long comparisons can be split across short exclusive-benchmark windows; `--load-gate`
+waits (bounded) for total CPU load to drop and records it. Output: `NAME.md` (median [min-max]
+per side and % change), raw stdout per run, `nvidia-smi` samples, and GPU process snapshots per
+block. The self-test `tests/tools/test_ab_compare.py` runs in CTest (`ab_compare_selftest`) when
+CMake finds a Python 3 interpreter.
