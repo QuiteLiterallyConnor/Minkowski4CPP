@@ -173,6 +173,12 @@ torch::Device require_device(bool cuda) {
 #endif
     if (!cuda) return torch::kCPU;
 #ifdef USE_CUDA
+    // Without the caching allocator (PYTORCH_NO_CUDA_MEMORY_CACHING=1, as run_sanitizers.ps1 sets for
+    // compute-sanitizer) its statistics stay 0, so CUDA growth (and the planted CUDA leak) is invisible
+    // and the tools' own bookkeeping grows host memory; memcheck's leak check covers this run instead.
+    const char *no_cache = std::getenv("PYTORCH_NO_CUDA_MEMORY_CACHING");
+    if (no_cache && std::string(no_cache) == "1")
+        throw mink_test::Skip("CUDA memory growth is not measurable without the caching allocator");
     if (at::cuda::is_available()) return torch::kCUDA;
     throw mink_test::Skip("CUDA not available");
 #else
