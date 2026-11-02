@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace minkowski {
@@ -21,6 +23,9 @@ constexpr float kMinAlpha = 1.0f / 255.0f;
 constexpr float kMaxAlpha = 0.99f;
 constexpr float kStopTransmittance = 1e-4f;
 constexpr double kLowPass = 0.3;
+// Added to the squared cut-off radius of the tile bounds so float rounding in
+// the rasterizers never drops a pixel whose alpha is exactly at 1/255.
+constexpr double kExtentSlack = 1e-2;
 
 at::Tensor quaternion_matrices(const at::Tensor &q) {
   const auto n = q / q.norm(2, {1}, true).clamp_min(1e-12);
@@ -198,13 +203,45 @@ void build_tile_lists(const at::Tensor &bounds, int64_t rows, int64_t cols,
   const auto x0 = bounds.select(1, 0), x1 = bounds.select(1, 1);
   const auto y0 = bounds.select(1, 2), y1 = bounds.select(1, 3);
   const auto widths = x1 - x0 + 1;
-  const auto counts = widths * (y1 - y0 + 1);
+#ifdef USE_CUDA
+  const bool fused = bounds.is_cuda() && detail::cuda_fused_tiles();
+#else
+  const bool fused = false;
+#endif
+  at::Tensor counts;
+  if (fused) {
+#ifdef USE_CUDA
+    counts = at::empty({m}, long_options);
+    detail::tile_counts_cuda(bounds.contiguous(), counts);
+#endif
+  } else {
+    counts = widths * (y1 - y0 + 1);
+  }
   const int64_t total = m > 0 ? counts.sum().item<int64_t>() : 0;
+  // The fused CPU and CUDA rasterizers index pairs and Gaussians with int32.
+  TORCH_CHECK(total <= std::numeric_limits<int32_t>::max() &&
+                  m <= std::numeric_limits<int32_t>::max(),
+              "render: ", total, " (tile, Gaussian) pairs for ", m,
+              " Gaussians exceed the int32 range of the fused rasterizers; "
+              "render fewer or smaller Gaussians or a smaller image");
   if (total == 0) {
     ids = at::zeros({1}, bounds.options().dtype(at::kInt));
     ranges = at::zeros({tiles, 2}, bounds.options().dtype(at::kInt));
     return;
   }
+#ifdef USE_CUDA
+  if (fused) {
+    // Same keys as below, written per Gaussian at its prefix offset; one kernel then splits the
+    // sorted keys into rows and tile ranges.
+    auto keys = at::empty({total}, long_options);
+    detail::tile_keys_cuda(bounds.contiguous(), at::cumsum(counts, 0) - counts, cols, keys);
+    keys = std::get<0>(keys.sort());
+    ids = at::empty({total}, bounds.options().dtype(at::kInt));
+    ranges = at::empty({tiles, 2}, bounds.options().dtype(at::kInt));
+    detail::finish_tile_lists_cuda(keys, m, tiles, ids, ranges);
+    return;
+  }
+#endif
   const auto gid = at::repeat_interleave(at::arange(m, long_options), counts);
   const auto offsets = at::cumsum(counts, 0) - counts;
   const auto local = at::arange(total, long_options) - offsets.index_select(0, gid);
@@ -473,7 +510,122 @@ struct KernelRasterFunction
   }
 };
 
+#ifdef USE_CUDA
+struct FusedGatherFunction : public torch::autograd::Function<FusedGatherFunction> {
+  static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &means,
+                            const at::Tensor &proj, const at::Tensor &opacity,
+                            const at::Tensor &colors, const at::Tensor &ids) {
+    const auto n = proj.size(0);
+    TORCH_CHECK(proj.dim() == 2 && proj.size(1) == 10 &&
+                    means.sizes() == at::IntArrayRef({n, 2}) && opacity.numel() == n &&
+                    colors.sizes() == at::IntArrayRef({n, 3}),
+                "gather_attributes: invalid attribute shapes");
+    for (const auto *t : {&means, &proj, &opacity, &colors})
+      TORCH_CHECK(t->is_cuda() && t->scalar_type() == at::kFloat &&
+                      t->device() == proj.device(),
+                  "gather_attributes: attributes must be float32 on one CUDA device");
+    TORCH_CHECK(ids.dim() == 1 && ids.is_contiguous() && ids.scalar_type() == at::kLong &&
+                    ids.device() == proj.device(),
+                "gather_attributes: ids must be contiguous CUDA int64 [M]");
+    auto out = at::empty({ids.numel(), 10}, proj.options());
+    detail::gather_attributes_forward_cuda(means, proj.contiguous(),
+                                           opacity.reshape({-1}).contiguous(),
+                                           colors.contiguous(), ids, out);
+    // The backward only needs row IDs and shapes, not the attribute values.
+    ctx->save_for_backward({ids});
+    ctx->saved_data["n"] = n;
+    ctx->saved_data["opacity_shape"] = opacity.sizes().vec();
+    return out;
+  }
+
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext *ctx,
+                                                 torch::autograd::variable_list grads) {
+    const auto ids = ctx->get_saved_variables()[0];
+    const auto n = ctx->saved_data["n"].toInt();
+    // One allocation and zero-fill, disjoint contiguous views for requested
+    // gradients only. In color-only training, retaining grad_colors must not
+    // keep unused geometry gradients alive. Unselected rows stay exactly zero.
+    const bool nm = ctx->needs_input_grad(0), np = ctx->needs_input_grad(1);
+    const bool no = ctx->needs_input_grad(2), nc = ctx->needs_input_grad(3);
+    const int64_t columns = (nm ? 2 : 0) + (np ? 10 : 0) + (no ? 1 : 0) + (nc ? 3 : 0);
+    auto storage = at::zeros({n * columns}, grads[0].options());
+    int64_t offset = 0;
+    auto part = [&](bool needed, int64_t cols) -> at::Tensor {
+      if (!needed) return {};
+      auto t = storage.slice(0, offset, offset + n * cols).view({n, cols});
+      offset += n * cols;
+      return t;
+    };
+    auto gm = part(nm, 2), gp = part(np, 10), go = part(no, 1), gc = part(nc, 3);
+    detail::gather_attributes_backward_cuda(ids, grads[0].contiguous(), gm, gp, go, gc);
+    return {gm, gp, go.defined() ? go.reshape(ctx->saved_data["opacity_shape"].toIntVector())
+                                 : at::Tensor(), gc, at::Tensor()};
+  }
+};
+
+// One autograd node for the whole projection (see gaussian_project_cuda.cu).
+struct FusedProjectFunction : public torch::autograd::Function<FusedProjectFunction> {
+  static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &positions,
+                            const at::Tensor &rotations, const at::Tensor &scales,
+                            const at::Tensor &world_to_camera,
+                            const std::vector<double> &params) {
+    const auto p = positions.contiguous(), q = rotations.contiguous(), s = scales.contiguous();
+    const auto w = world_to_camera.contiguous();
+    auto out = at::empty({p.size(0), detail::kProjectColumns}, p.options());
+    detail::project_forward_cuda(p, q, s, w, unpack(params), out);
+    ctx->save_for_backward({p, q, s, w});
+    ctx->saved_data["params"] = params;
+    return out;
+  }
+
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext *ctx,
+                                                 torch::autograd::variable_list grads) {
+    const auto saved = ctx->get_saved_variables();
+    const auto &p = saved[0], &q = saved[1], &s = saved[2], &w = saved[3];
+    auto gp = at::empty_like(p), gq = at::empty_like(q), gs = at::empty_like(s);
+    if (grads[0].defined())
+      detail::project_backward_cuda(p, q, s, w,
+                                    unpack(ctx->saved_data["params"].toDoubleVector()),
+                                    grads[0].contiguous(), gp, gq, gs);
+    else {
+      gp.zero_();
+      gq.zero_();
+      gs.zero_();
+    }
+    return {gp, gq, gs, at::Tensor(), at::Tensor()};
+  }
+
+  static detail::ProjectParams unpack(const std::vector<double> &v) {
+    return {static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2]),
+            static_cast<float>(v[3]), static_cast<float>(v[4]), static_cast<float>(v[5]),
+            static_cast<float>(v[6]), static_cast<float>(v[7]), static_cast<float>(v[8])};
+  }
+};
+#endif
+
 } // namespace
+
+#ifdef USE_CUDA
+namespace detail {
+bool &cuda_fused_projection() {
+  static bool on = true;
+  return on;
+}
+bool &cuda_fused_tiles() {
+  static bool on = true;
+  return on;
+}
+bool &cuda_fused_gather() {
+  static bool on = true;
+  return on;
+}
+at::Tensor gather_attributes(const at::Tensor &means, const at::Tensor &proj,
+                              const at::Tensor &opacity, const at::Tensor &colors,
+                              const at::Tensor &ids) {
+  return FusedGatherFunction::apply(means, proj, opacity, colors, ids);
+}
+} // namespace detail
+#endif
 
 RenderOutput render_gaussians(const at::Tensor &positions,
                               const at::Tensor &rotations,
@@ -522,82 +674,178 @@ RenderOutput render_gaussians(const at::Tensor &positions,
   const auto rotation = world_to_camera.slice(0, 0, 3).slice(1, 0, 3);
   const auto translation = world_to_camera.slice(0, 0, 3).select(1, 3);
 
-  const auto camera_points =
-      at::matmul(positions, rotation.transpose(0, 1)) + translation;
-  const auto z = camera_points.select(1, 2);
-  const auto safe_z = z.clamp_min(static_cast<double>(camera.near_plane));
-  const auto tx = camera_points.select(1, 0) / safe_z;
-  const auto ty = camera_points.select(1, 1) / safe_z;
-  const auto x2 = camera.fx * tx + camera.cx;
-  const auto y2 = camera.fy * ty + camera.cy;
-  auto means2d = at::stack({x2, y2}, 1);
-  if (means2d.requires_grad())
-    means2d.retain_grad();
-
   // Clamp the viewing frustum used by the Jacobian to keep it stable near the
-  // image border.
-  const double limit_x = 1.3 * 0.5 * static_cast<double>(width) / camera.fx;
-  const double limit_y = 1.3 * 0.5 * static_cast<double>(height) / camera.fy;
-  const auto txc = tx.clamp(-limit_x, limit_x);
-  const auto tyc = ty.clamp(-limit_y, limit_y);
-  const auto zeros = at::zeros_like(safe_z);
-  const auto jacobian = at::stack(
-      {at::stack({camera.fx / safe_z, zeros, -camera.fx * txc / safe_z}, 1),
-       at::stack({zeros, camera.fy / safe_z, -camera.fy * tyc / safe_z}, 1)},
-      1); // [N, 2, 3]
-  const auto basis =
-      quaternion_matrices(rotations) * scales.unsqueeze(1); // R * diag(s)
-  const auto projected = at::matmul(at::matmul(jacobian, rotation), basis);
-  const auto cov2d = at::matmul(projected, projected.transpose(1, 2));
-  const auto a = cov2d.select(1, 0).select(1, 0) + kLowPass;
-  const auto b = cov2d.select(1, 0).select(1, 1);
-  const auto c = cov2d.select(1, 1).select(1, 1) + kLowPass;
-  const auto det = a * c - b * b;
-  const auto inverse_det = 1.0 / det.clamp_min(1e-12);
-  const auto conic_a = c * inverse_det;
-  const auto conic_b = -b * inverse_det;
-  const auto conic_c = a * inverse_det;
+  // image border: 15% of the image size beyond each edge. The limits are
+  // measured from the principal point, so they are asymmetric when cx != W/2
+  // (cropped or off-center intrinsics); for a centered principal point they
+  // equal the symmetric 1.3 x half-FOV clamp of 3DGS.
+  const double w = static_cast<double>(width), h = static_cast<double>(height);
+  const double tx_lo = -(camera.cx + 0.15 * w) / camera.fx;
+  const double tx_hi = (w - camera.cx + 0.15 * w) / camera.fx;
+  const double ty_lo = -(camera.cy + 0.15 * h) / camera.fy;
+  const double ty_hi = (h - camera.cy + 0.15 * h) / camera.fy;
+  at::Tensor z, x2, y2, means2d, a, b, c, det, conic_a, conic_b, conic_c;
+#ifdef USE_CUDA
+  // Fused projection (one kernel each way) unless the camera pose itself is being optimized.
+  const bool fused_projection = use_cuda_raster && detail::cuda_fused_projection() &&
+                                !world_to_camera.requires_grad();
+#else
+  const bool fused_projection = false;
+#endif
+  at::Tensor proj;
+  if (fused_projection) {
+#ifdef USE_CUDA
+    proj = FusedProjectFunction::apply(
+        positions, rotations, scales, world_to_camera.slice(0, 0, 3),
+        std::vector<double>{camera.fx, camera.fy, camera.cx, camera.cy,
+                            static_cast<double>(camera.near_plane), tx_lo, tx_hi, ty_lo,
+                            ty_hi});
+    x2 = proj.select(1, 0);
+    y2 = proj.select(1, 1);
+    means2d = proj.slice(1, 0, 2);
+    if (means2d.requires_grad())
+      means2d.retain_grad();
+    conic_a = proj.select(1, 2);
+    conic_b = proj.select(1, 3);
+    conic_c = proj.select(1, 4);
+    z = proj.select(1, 5);
+    a = proj.select(1, 6);
+    b = proj.select(1, 7);
+    c = proj.select(1, 8);
+    det = proj.select(1, 9);
+#endif
+  } else {
+    const auto camera_points =
+        at::matmul(positions, rotation.transpose(0, 1)) + translation;
+    z = camera_points.select(1, 2);
+    const auto safe_z = z.clamp_min(static_cast<double>(camera.near_plane));
+    const auto tx = camera_points.select(1, 0) / safe_z;
+    const auto ty = camera_points.select(1, 1) / safe_z;
+    x2 = camera.fx * tx + camera.cx;
+    y2 = camera.fy * ty + camera.cy;
+    means2d = at::stack({x2, y2}, 1);
+    if (means2d.requires_grad())
+      means2d.retain_grad();
 
-  at::Tensor radii_long, visible, order_ids, bounds;
+    const auto txc = tx.clamp(tx_lo, tx_hi);
+    const auto tyc = ty.clamp(ty_lo, ty_hi);
+    const auto zeros = at::zeros_like(safe_z);
+    const auto jacobian = at::stack(
+        {at::stack({camera.fx / safe_z, zeros, -camera.fx * txc / safe_z}, 1),
+         at::stack({zeros, camera.fy / safe_z, -camera.fy * tyc / safe_z}, 1)},
+        1); // [N, 2, 3]
+    const auto basis =
+        quaternion_matrices(rotations) * scales.unsqueeze(1); // R * diag(s)
+    const auto projected = at::matmul(at::matmul(jacobian, rotation), basis);
+    // cov2d = M M^T for the 2x3 matrix M with rows m1, m2. Its determinant is
+    // computed with the Lagrange identity |m1|^2 |m2|^2 - (m1.m2)^2 =
+    // |m1 x m2|^2: a sum of squares, instead of a*c - b*b, which cancels
+    // catastrophically in float32 for long thin (needle) splats.
+    const auto m1 = projected.select(1, 0), m2 = projected.select(1, 1);
+    const auto cov_a = (m1 * m1).sum(1);
+    b = (m1 * m2).sum(1);
+    const auto cov_c = (m2 * m2).sum(1);
+    a = cov_a + kLowPass;
+    c = cov_c + kLowPass;
+    det = at::linalg_cross(m1, m2, 1).square().sum(1) +
+          kLowPass * (cov_a + cov_c) + kLowPass * kLowPass;
+    const auto inverse_det = 1.0 / det.clamp_min(1e-12);
+    conic_a = c * inverse_det;
+    conic_b = -b * inverse_det;
+    conic_c = a * inverse_det;
+  }
+
+  at::Tensor radii_long, visible, order_ids, bounds, tile_pairs;
+  const auto max_col = (width + tile_size - 1) / tile_size - 1;
+  const auto max_row = (height + tile_size - 1) / tile_size - 1;
+#ifdef USE_CUDA
+  if (fused_projection && detail::cuda_fused_tiles()) {
+    // One kernel for the culling arithmetic below, the radii and every Gaussian's tile bounds.
+    torch::NoGradGuard no_grad;
+    const auto long_options = float_options.dtype(at::kLong);
+    visible = at::empty({n}, float_options.dtype(at::kBool));
+    radii_long = at::empty({n}, long_options);
+    auto all_bounds = at::empty({n, 4}, long_options);
+    auto counts = at::empty({n}, long_options);
+    const detail::CullParams k{static_cast<float>(camera.near_plane),
+                               kMinAlpha,
+                               static_cast<float>(kExtentSlack),
+                               static_cast<float>(width),
+                               static_cast<float>(height),
+                               tile_size,
+                               max_col,
+                               max_row};
+    detail::cull_cuda(proj.detach(), opacities.detach().reshape({-1}).contiguous(), k, visible,
+                      radii_long, all_bounds, counts);
+    const auto ids = visible.nonzero().squeeze(1);
+    const auto order = z.detach().index_select(0, ids).argsort(/*stable=*/true, 0, false);
+    order_ids = ids.index_select(0, order);
+    bounds = all_bounds.index_select(0, order_ids);
+    tile_pairs = counts.sum();
+  } else
+#endif
   {
     torch::NoGradGuard no_grad;
-    const auto mid = 0.5 * (a + c);
-    const auto lambda =
-        mid + at::sqrt((mid * mid - det).clamp_min(0.1));
-    const auto radius = at::ceil(3.0 * at::sqrt(lambda));
+    // A pixel at Mahalanobis distance m gets alpha = o * exp(-m^2 / 2), which
+    // is dropped below 1/255. So nothing beyond m^2 = 2 ln(255 o) can
+    // contribute (at most 3.33 sigma for o = 1; less for transparent splats),
+    // and the tight axis-aligned box of that ellipse is m * sqrt(diag(cov)).
+    // The small slack keeps pixels whose alpha rounds to exactly 1/255.
+    const auto opacity = opacities.detach().reshape({-1});
+    const auto extent = at::sqrt(
+        (2.0 * at::log(opacity.clamp_min(kMinAlpha) * 255.0)).clamp_min(0.0) +
+        kExtentSlack);
+    const auto radius_x = at::ceil(extent * at::sqrt(a.detach()));
+    const auto radius_y = at::ceil(extent * at::sqrt(c.detach()));
     const auto mx = x2.detach(), my = y2.detach();
     visible = (z > camera.near_plane) & (det > 1e-12) &
-              (opacities.reshape({-1}) >= kMinAlpha) &
-              at::isfinite(mx) & at::isfinite(my) & at::isfinite(radius) &
-              (mx + radius >= 0) & (mx - radius < static_cast<double>(width)) &
-              (my + radius >= 0) & (my - radius < static_cast<double>(height));
+              (opacity >= kMinAlpha) & at::isfinite(mx) & at::isfinite(my) &
+              at::isfinite(radius_x) & at::isfinite(radius_y) &
+              (mx + radius_x >= 0) &
+              (mx - radius_x < static_cast<double>(width)) &
+              (my + radius_y >= 0) &
+              (my - radius_y < static_cast<double>(height));
+    const auto radius = at::maximum(radius_x, radius_y);
     radii_long = at::where(visible, radius, at::zeros_like(radius)).to(at::kLong);
     const auto ids = visible.nonzero().squeeze(1);
-    const auto order = z.index_select(0, ids).argsort();
+    // Stable: Gaussians at exactly equal depth keep their index order, so the
+    // image does not depend on the sort implementation or device.
+    const auto order =
+        z.index_select(0, ids).argsort(/*stable=*/true, 0, false);
     order_ids = ids.index_select(0, order);
 
     const auto sx = mx.index_select(0, order_ids);
     const auto sy = my.index_select(0, order_ids);
-    const auto sr = radius.index_select(0, order_ids);
+    const auto srx = radius_x.index_select(0, order_ids);
+    const auto sry = radius_y.index_select(0, order_ids);
     const double tile = static_cast<double>(tile_size);
-    const auto max_col = (width + tile_size - 1) / tile_size - 1;
-    const auto max_row = (height + tile_size - 1) / tile_size - 1;
     bounds = at::stack(
-        {at::floor((sx - sr) / tile).clamp(0, max_col).to(at::kLong),
-         at::floor((sx + sr) / tile).clamp(0, max_col).to(at::kLong),
-         at::floor((sy - sr) / tile).clamp(0, max_row).to(at::kLong),
-         at::floor((sy + sr) / tile).clamp(0, max_row).to(at::kLong)},
+        {at::floor((sx - srx) / tile).clamp(0, max_col).to(at::kLong),
+         at::floor((sx + srx) / tile).clamp(0, max_col).to(at::kLong),
+         at::floor((sy - sry) / tile).clamp(0, max_row).to(at::kLong),
+         at::floor((sy + sry) / tile).clamp(0, max_row).to(at::kLong)},
         1);
+    tile_pairs = ((bounds.select(1, 1) - bounds.select(1, 0) + 1) *
+                  (bounds.select(1, 3) - bounds.select(1, 2) + 1))
+                     .sum();
   }
 
-  auto gather = [&](const at::Tensor &t) { return t.index_select(0, order_ids); };
-  const auto attrs = at::cat(
-      {at::stack({gather(means2d.select(1, 0)), gather(means2d.select(1, 1)),
-                  gather(conic_a), gather(conic_b), gather(conic_c),
-                  gather(opacities.reshape({-1})), gather(z)},
-                 1),
-       gather(colors)},
-      1);
+  at::Tensor attrs;
+#ifdef USE_CUDA
+  if (fused_projection && detail::cuda_fused_gather()) {
+    attrs = detail::gather_attributes(means2d, proj, opacities, colors, order_ids);
+  } else
+#endif
+  {
+    auto gather = [&](const at::Tensor &t) { return t.index_select(0, order_ids); };
+    attrs = at::cat(
+        {at::stack({gather(means2d.select(1, 0)), gather(means2d.select(1, 1)),
+                    gather(conic_a), gather(conic_b), gather(conic_c),
+                    gather(opacities.reshape({-1})), gather(z)},
+                   1),
+         gather(colors)},
+        1);
+  }
 
   at::Tensor background = options.background.defined()
                               ? options.background.to(float_options)
@@ -619,6 +867,7 @@ RenderOutput render_gaussians(const at::Tensor &positions,
   result.means2d = means2d;
   result.visible = visible;
   result.radii = radii_long;
+  result.tile_pairs = tile_pairs;
   return result;
 }
 

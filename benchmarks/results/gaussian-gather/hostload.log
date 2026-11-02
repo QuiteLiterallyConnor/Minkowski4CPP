@@ -1,0 +1,12 @@
+2026-11-02T18:53:14 [before] cpu_total_avg_5s=20,7% gpu(util,used,total)=1 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:53:24 [round1] cpu_total_avg_2s=34% gpu(util,used,total)=0 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:53:34 [round2] cpu_total_avg_2s=30% gpu(util,used,total)=1 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:53:44 [round3] cpu_total_avg_2s=25,1% gpu(util,used,total)=1 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:53:54 [round4] cpu_total_avg_2s=26,2% gpu(util,used,total)=1 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:54:04 [round5] cpu_total_avg_2s=45,1% gpu(util,used,total)=0 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:54:14 [round6] cpu_total_avg_2s=30,7% gpu(util,used,total)=1 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:54:24 [round7] cpu_total_avg_2s=26,9% gpu(util,used,total)=0 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:54:35 [round8] cpu_total_avg_2s=37,4% gpu(util,used,total)=0 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:54:45 [round9] cpu_total_avg_2s=42,2% gpu(util,used,total)=0 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:54:55 [round10] cpu_total_avg_2s=43,8% gpu(util,used,total)=0 %, 602 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost
+2026-11-02T18:55:01 [after] cpu_total_avg_5s=35,5% gpu(util,used,total)=10 %, 1663 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,svchost

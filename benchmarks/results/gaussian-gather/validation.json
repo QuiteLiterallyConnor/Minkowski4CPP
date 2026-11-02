@@ -1,0 +1,27 @@
+{
+  "captured": "2026-11-02T18:53:06.0494082+01:00",
+  "head": "d45b9112ac664688bfefbc79d302738dd7a4aecc",
+  "tracked_diff": null,
+  "binaries": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "33922770CC2A672C231828A7F25F277A826A73D54FEAC5145EDB598C44DF43D4",
+      "Path": "C:\\Users\\User\\Work\\mink-build\\gauss-cull-cuda\\gaussian_render_bench.gather-final.exe"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "063B40FE8332D5A4F0BB16272EBD194561927A655DDE7EEE4D8F57902FF52CBA",
+      "Path": "C:\\Users\\User\\Work\\mink-build\\gauss-cull-cuda\\gaussian_tests.gather-final.exe"
+    }
+  ],
+  "cpu_gaussian": "47/0/5",
+  "cpu_adaptive": "119/0/1",
+  "cuda_gaussian": "68/0/0",
+  "cuda_adaptive": "123/0/0",
+  "focused_sanitizers": [
+    "2026-11-02T18:49:16 memcheck rc=0",
+    "2026-11-02T18:49:48 racecheck rc=0",
+    "2026-11-02T18:49:51 initcheck rc=0",
+    "done 2026-11-02T18:49:51"
+  ]
+}

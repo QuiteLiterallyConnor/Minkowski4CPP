@@ -1,0 +1,302 @@
+[
+  {
+    "Algorithm": "SHA256",
+    "Hash": "957789797332D03C729E2E63977C5EE18538437E11D4F44056C1D75869FD468B",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a0_r1.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "DCB8D608CB187770A96F48A20850BB32D92C5D093E35B6D7DFDD5FE319F7E54B",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a0_r2.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "1AE31ABA580034F4AECDE5D6ADAF65E79A58CCF6AA89F4A2729790360A3C168E",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a0_r3.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "7FB27175B1024E9AD4A0989ED45F480D6F4A541E9DB7A811CE0083D0489F7054",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a0_r4.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "2F90FC7E9C01D1CDA5342D242BA1088CAF17E255075B4E80CBA3FD2C371E1920",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a0_r5.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "AB30A71615AE5BF8BFA4DA2A027EB70D53837F71740EBB5097F02708B28647B7",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a0_r6.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "2CDB5DB23761C3A3D38405007FA590B450087FF86DBCEE7309F5A10918AF4178",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a0_r7.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "877EFD9FE6EABEDE504224E47D06A5FE9EC18162E0068039BFCE9392862A54F4",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a1_r1.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "B5BCC0564B0D5A62810A5522A180D8E8B8FBB75E79F90C60B702882309FB49DD",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a1_r2.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "D0A16AF56224C3728C9D77CFCD0E46716D0AD8C22E8E6A74F87035CCCB03C7D9",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a1_r3.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "A0384983FAE923660DA36CEE977C4B00806F2345DEB82845F86822596A43CCDB",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a1_r4.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "A0498840252581EF03C9A03279FBDEB24AE9CF117600930D8C74614A2DB68168",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a1_r5.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "52D7DFA5BCDAF5E87FD0A8642C41E373B9321001BE4D3D28D682C9A9E65E8A0D",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a1_r6.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "71D46F4BA3523B2BC00FB8C634A6281E4E80DEB5FBEF5B9A3A77A365631BC115",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a1_r7.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "731F4A200A87F0A3D8978F3AC057EA3CF229BF9DB7344AB38E1A9A3313784D1E",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\dense_a1_r8.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "28C0058C9DE48A5A97CEB87AA5E330BF3E5AD50D500D7B2410F9AB47DECF422F",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a0_r1.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "B8EF3ED8A230580C982461F1167E63ADA62212B22711A9C91CCD4D6777988FBF",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a0_r2.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "D1082EF061E18BAF60296D26B38F6AFB00A8FE6F788380189126AF62F089D682",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a0_r3.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "C11B908EE4A2904C8F6405B28789C86FDD7E44A7E453D6E1EF821BE89421D9CB",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a0_r4.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "B65D6BF0E53C988DFD2413EFF69657CE15998299A5D4863D56DEB82306DB1BFA",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a0_r5.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "96DB965668AB28C3FA2B7EA0BBFED620C13F4DA4C78FFFCF9FCF0568384BBCEA",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a0_r6.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "C51A7607996E62E5C86A3FFF94161EFDCFB2E9A3FCA2E9ACBE04A29730293281",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a0_r7.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "F12C09E35D724EE97E3BA8B61C6C0D4CD91BA1F46B1C8E13F868407D7A5B697C",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a1_r1.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "F868957DF46787037BFD8D79C57AE12EE98EBDD70FA9CE939475F0A20E87E5BD",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a1_r2.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "1E408F09E1D8CF74DF9F76F3920C6E1D1298618F2186107361644F967AA0BAC5",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a1_r3.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "295B0FC8B8B9AD8228977C488BC04AED22200FAA5235EA0E183F30B0E20D68E2",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a1_r4.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "34AA1E875A22F603F031F8CDCB036633D07D7D0126624295E4AAFBE7E19B4138",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a1_r5.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "CF729A7DCC36509DCE1C53EBB8200395C740CC477F68B2B259544516572A31A9",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a1_r6.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "407EB9CC5204F40EFECBCAA1837087AEA4F93CBCE0052991D5ECF6F3356AD236",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a1_r7.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "6D44E143A6293FDA0C2C6C9E4D5818E60081DE7107749AAEA0E424093C36F144",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\render_a1_r8.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "ED4A3130ECC91514D2516CE370CBA4787EA512BACC8D155EA20A0A83F23366C1",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a0_r1.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "61552E25BDC95BEBF8AE1B983B5F05C4992B316095EFDF57AB620B5370B80D8B",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a0_r2.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "C8329A8C07C18D1414577D167EF3880D9D0F22E4899C4CA4BDA11FE15FACD786",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a0_r3.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "76378171254B7083F5ECDD5A50F1F0821AF42FD268BA16CC70EC149DB54BC74F",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a0_r4.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "E82E24D188963D7A850D1DF7DB1CB1B76303331388F4886621AD3FCB1F10A39F",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a0_r5.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "4690EAA7789252D6E0D6B7079825C62B5BD375CA5D6892E89843C9E72D851181",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a0_r6.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "237B581F7C147687D0B92CFEBCAA870390040655EBA868C9605EB6E035B97121",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a0_r7.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "F0928FFC800495ACD3C9EC8B941043C708672CBCCEAA9676369AF2C667D2AC33",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a1_r1.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "9393A24882803A26AAEFA17583C1DAFE2605F4826B95C3C7609D2AD52F24E5D8",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a1_r2.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "24E5A13DEBAC38864D8C2687F09ED75CC3232E1C15209FC35D0A045B182F16A6",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a1_r3.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "211E6901BEEDE5CDDBB94A79CC0D1062A7252265F139FD93B8B4358C12C544AE",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a1_r4.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "717F744CECB2A3EF211DC999D34948BC9245C6537AFDF8385B68CA6FF4E0395E",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a1_r5.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "1F9B660D763677EF8BBFB2190F2135873E76899FF7B1428E244D776D84FB80D6",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a1_r6.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "F9C46B077602D06295F150164997A63FBCABD70ED289658AA47A9259A346A805",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a1_r7.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "81DAAE48C0F5A90A1C2198783AA9F3A8D9E4CDC3D00FF35703E25FC115912B63",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\row-groups_a1_r8.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "1F64CF8ECDA0FBBFA6430F1F0823DB5F343DBDE7E48C21AB3529D0A29D456F48",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a0_r1.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "3910F23F4D40E7EE148F18A969AC269A7DC7806BF2852FB7205011D1B81F0A4D",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a0_r2.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "C94CB8EA9A6579E13CC43AA060FD67C86411D7A385D10E65029D17CD829F2EF4",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a0_r3.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "E6A2F4CBEB6DBED0FDE3C638A4C25C3D1A70C5A8DAFA5EA0325FA8B271EC2219",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a0_r4.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "53AFBA0538079684D5E05F95BABCC32869E9BC1297306271AB79F299FC7C57C0",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a0_r5.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "36F63DE09CA5E99AD9BF0EB5F1718D17FF89BAFCB84EF13F4FD77A298351F80A",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a0_r6.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "9D1E36F789B007ED09DF93AD02D859F149F6D50C11CDDC84AF34B039BE232B33",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a0_r7.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "95B8BADBEEF6144272DC672A81D518C7C44357FD30B322F4F0467E0FB0A1D9DB",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a1_r1.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "717AC039D2B325B7DC177F3A473077C3421652AEC6DACF96B1FAAA9C46FF33BB",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a1_r2.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "2D0B6F8A237828A3B47AA556D41C391C7CCBE61235786D74817FE1BB5C241BCD",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a1_r3.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "7D7A8D71FE24114A4E4F59A849CD7F7120398F24E150A2AB9996598D043AE304",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a1_r4.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "18896D859146BB6A9876DA65BBEB2DBAC062B095B120040584016EE70D0FC045",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a1_r5.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "3CF67C8242168FD80F38D7AB6C3BDA7F7F260302FDF2439B35B21A97FC57C49C",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a1_r6.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "B6127F2A6628BD4E239465B28EBFF0182A62A03B55A320704E5761725588FE4A",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a1_r7.json"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "0702684AF69BD29CA07316E1DC78FF6F2CE0D3B1AFA82724DF706EF8FB6A3472",
+    "Path": "C:\\Users\\User\\Work\\mink-lab\\results\\round10\\gaussian-atomics\\ab\\sparse_a1_r8.json"
+  }
+]

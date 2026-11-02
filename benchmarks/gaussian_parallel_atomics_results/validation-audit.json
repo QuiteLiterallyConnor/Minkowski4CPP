@@ -1,0 +1,78 @@
+{
+  "status": "passed",
+  "source": "b96db27aa5ef68e67d8c8bc3b3e6fa3a7548dcac",
+  "configurations": {
+    "cpu": {
+      "ctest_suites": 4,
+      "suite_counts": [
+        [
+          "119",
+          "0",
+          "1"
+        ],
+        [
+          "47",
+          "0",
+          "8"
+        ]
+      ],
+      "binaries": [
+        {
+          "name": "gaussian_tests.exe",
+          "sha256": "448a71aff94796d5e267a875d7a0618c77ab2052d0118159502b1680cd5e8b7b"
+        },
+        {
+          "name": "adaptive_tests.exe",
+          "sha256": "106a2bbd08cf310c8d1e0ea657a5da48a7d0a745290a1c1077b81e4c977feaa8"
+        }
+      ]
+    },
+    "cuda": {
+      "ctest_suites": 4,
+      "suite_counts": [
+        [
+          "123",
+          "0",
+          "0"
+        ],
+        [
+          "71",
+          "0",
+          "0"
+        ]
+      ],
+      "binaries": [
+        {
+          "name": "gaussian_tests.exe",
+          "sha256": "98010bf3f1aec7cd06a5e68d911ef973c43b55e4842fc508f25267023e691028"
+        },
+        {
+          "name": "adaptive_tests.exe",
+          "sha256": "ae1da23dce153bd141a6027240f6e06cbdc5877c94519e1e43b4eeb5bc8bf9ad"
+        }
+      ]
+    }
+  },
+  "tools": [
+    {
+      "tool": "memcheck",
+      "exit": 0
+    },
+    {
+      "tool": "racecheck",
+      "exit": 0
+    },
+    {
+      "tool": "initcheck",
+      "exit": 0
+    }
+  ],
+  "sanitizer_exclusions": [],
+  "invariants": [
+    "4/4 complete CTests in each build",
+    "zero suite failures",
+    "live test and benchmark executable SHA256 matches receipts",
+    "all three sanitizer filtered tests pass under every tool",
+    "memcheck/initcheck zero errors; racecheck zero hazards/errors/warnings"
+  ]
+}

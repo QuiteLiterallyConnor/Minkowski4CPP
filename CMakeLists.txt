@@ -542,8 +542,14 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         tests/gaussian/test_gaussian_tensor.cpp
         tests/gaussian/test_gaussian_ply.cpp
         tests/gaussian/test_gaussian_render.cpp
+        tests/gaussian/test_gaussian_projection.cpp
+        tests/gaussian/test_gaussian_project.cpp
+        tests/gaussian/test_gaussian_cull.cpp
+        tests/gaussian/test_gaussian_gather.cpp
+        tests/gaussian/test_gaussian_tile_bounds.cpp
         tests/gaussian/test_gaussian_cpu_raster.cpp
         tests/gaussian/test_gaussian_cuda_backward.cpp
+        tests/gaussian/test_gaussian_parallel_atomics.cpp
     )
 
     target_compile_definitions(gaussian_tests PRIVATE
@@ -738,3 +744,13 @@ if(NOT CPU_ONLY)
 endif()
 
 message(STATUS "========================================")
+
+# Isolated Gaussian raster traversal benchmark (CUDA events plus work counts).
+if(MINK_BUILD_GAUSSIAN_BENCHMARKS AND MINKOWSKI_ENABLE_GAUSSIAN AND NOT CPU_ONLY)
+    add_executable(gaussian_raster_backward_bench benchmarks/gaussian_raster_backward_bench.cpp)
+    target_link_libraries(gaussian_raster_backward_bench PRIVATE minkowski_cpp)
+    target_include_directories(gaussian_raster_backward_bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine")
+    if(MINK_TORCH_CXX_FLAGS)
+        target_compile_options(gaussian_raster_backward_bench PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>)
+    endif()
+endif()

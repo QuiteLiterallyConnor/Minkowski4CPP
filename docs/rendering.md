@@ -60,8 +60,15 @@ All render input tensors must be **float32 on the same device**.
 | `depth` | `[H,W]` | Alpha-weighted camera-space z; zero where empty |
 | `alpha` | `[H,W]` | Accumulated opacity |
 | `means2d` | `[N,2]` | Screen-space centers, used for gradient statistics |
-| `visible` | `[N]`, bool | Whether a Gaussian contributed |
-| `radii` | `[N]`, int64 | Screen radius in pixels; zero if culled |
+| `visible` | `[N]`, bool | Whether a Gaussian passed culling (its footprint reaches the image) |
+| `radii` | `[N]`, int64 | Screen radius in pixels (larger half-side of the footprint box); zero if culled |
+| `tile_pairs` | `[]`, int64 | Number of (tile, Gaussian) pairs composited; `.item()` synchronizes CUDA |
+
+A Gaussian's footprint is where its alpha `o * exp(-m^2/2)` reaches the
+1/255 cut-off, i.e. Mahalanobis radius `m = sqrt(2 ln(255 o))` (3.33 sigma for
+`o = 1`, less for transparent splats). Tiles are assigned from the
+axis-aligned box of that ellipse, so the image does not depend on the tile
+size and needle-like splats only touch the tiles along their footprint.
 
 Depth is alpha-weighted, not automatically a normalized expected-depth
 map. Interpret it accordingly when comparing against sensor depth.
