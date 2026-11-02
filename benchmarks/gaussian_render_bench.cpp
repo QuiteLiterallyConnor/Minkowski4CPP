@@ -7,6 +7,7 @@
 //   gaussian_render_bench [--input scene.ply | --synthetic]
 //       [--counts 5000,20000,0] (0 = all splats) [--sizes 128,512]
 //       [--devices cpu,cuda,cuda-torch] [--warmup 2] [--iterations 5]
+//       [--fused-adam 0|1] (CUDA Adam update in --train, default 1)
 //       [--train] [--label name] [--output results.json]
 //       [--dump-grads prefix] [--compare-grads prefix]
 //
@@ -24,6 +25,7 @@
 #include <torch/version.h>
 
 #ifdef USE_CUDA
+#include "gaussian/gaussian_cuda.hpp"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <cuda_runtime.h>
@@ -226,6 +228,10 @@ int main(int argc, char **argv) {
         iterations = std::max(1, std::stoi(next()));
       else if (a == "--train")
         train = true;
+#ifdef USE_CUDA
+      else if (a == "--fused-adam") // 0: LibTorch Adam ops, 1: fused CUDA kernel (default)
+        minkowski::gaussian::detail::cuda_fused_adam() = std::stoi(next()) != 0;
+#endif
       else if (a == "--label")
         label = next();
       else if (a == "--output")
