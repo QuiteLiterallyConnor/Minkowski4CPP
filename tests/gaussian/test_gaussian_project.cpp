@@ -137,8 +137,12 @@ TEST(gaussian_fused_projection_matches_libtorch_render) {
     const auto aten = run(scene, cam, false);
     // Culling and radii come from float32 values that differ in the last bits between the two
     // paths, so a splat right at a boundary may flip; allow a handful.
-    CHECK((fused.visible.cpu() != aten.visible.cpu()).sum().item<int64_t>() <= 3);
-    CHECK((fused.radii.cpu() != aten.radii.cpu()).sum().item<int64_t>() <= 3);
+    const int64_t vis_flips = (fused.visible.cpu() != aten.visible.cpu()).sum().item<int64_t>();
+    const int64_t radius_flips = (fused.radii.cpu() != aten.radii.cpu()).sum().item<int64_t>();
+    std::cout << "         culling flips: visible " << vis_flips << ", radii " << radius_flips
+              << " of " << fused.visible.numel() << "\n";
+    CHECK(vis_flips <= 3);
+    CHECK(radius_flips <= 3);
     check_close(fused.image, aten.image, 1e-4, 1e-5, "image");
     check_close(fused.depth, aten.depth, 1e-4, 1e-5, "depth");
     check_close(fused.alpha, aten.alpha, 1e-4, 1e-5, "alpha");
