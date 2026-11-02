@@ -150,25 +150,104 @@ StepResult refine_step(const Topology &t, const at::Tensor &f, const std::vector
 }
 
 // Merges leaves at `level` into their parents when the parent box is inside region.
+//
+// Keys are sorted by level first, so only two runs change: the merged leaves leave the
+// `level` run and their parents join the `level - 1` run. Only the merged leaves are sorted
+// (by parent, then index) and merged into that run; every other leaf keeps its order, and
+// the features of untouched runs are sliced instead of gathered, so pooling no longer sorts
+// and remaps every leaf. Keys, features and the reduction order (children of a parent in
+// index order) are those of sorting all entries (finish()); the only bit-level difference is
+// that untouched leaves keep -0.0 where 0 + x gave +0.0.
 StepResult coarsen_step(const Topology &t, const at::Tensor &f, const AxisAlignedRegion &region,
                         uint32_t level, Reduction reduction, bool &changed) {
-  std::vector<Entry> entries;
   changed = false;
-  for (int64_t i = 0; i < t.size(); ++i) {
-    const Key &k = t.keys[i];
-    if (k.level == level && level >= 1) {
-      const Key p = detail::parent_key(k);
-      if (inside(t, p, region)) {
-        entries.push_back({p, i, 1.0});
-        changed = true;
-        continue;
-      }
-    }
-    entries.push_back({k, i, 1.0});
-  }
-  if (!changed)
+  if (level < 1 || level >= t.counts.size() || t.counts[level] == 0)
     return {};
-  return finish(t.config, std::move(entries), f, reduction, false);
+  int64_t b0 = 0; // first leaf of the level - 1 run
+  for (uint32_t l = 0; l + 1 < level; ++l)
+    b0 += t.counts[l];
+  const int64_t b1 = b0 + t.counts[level - 1]; // first leaf of the level run
+  const int64_t e1 = b1 + t.counts[level];
+  const int64_t N = t.size();
+  struct Child {
+    Key parent;
+    int64_t src;
+  };
+  std::vector<Child> merged;
+  std::vector<int64_t> kept; // leaves of the level run that stay
+  merged.reserve(static_cast<size_t>(e1 - b1));
+  for (int64_t i = b1; i < e1; ++i) {
+    const Key p = detail::parent_key(t.keys[i]);
+    if (inside(t, p, region))
+      merged.push_back({p, i});
+    else
+      kept.push_back(i);
+  }
+  if (merged.empty())
+    return {};
+  changed = true;
+  std::sort(merged.begin(), merged.end(), [](const Child &a, const Child &b) {
+    if (detail::key_less(a.parent, b.parent))
+      return true;
+    if (detail::key_less(b.parent, a.parent))
+      return false;
+    return a.src < b.src;
+  });
+  std::vector<Key> parents;
+  std::vector<int64_t> src, dst;
+  src.reserve(merged.size());
+  dst.reserve(merged.size());
+  for (const Child &c : merged) {
+    if (parents.empty() || !(parents.back() == c.parent))
+      parents.push_back(c.parent);
+    src.push_back(c.src);
+    dst.push_back(static_cast<int64_t>(parents.size()) - 1);
+  }
+  const int64_t np = static_cast<int64_t>(parents.size());
+
+  // New keys: levels below level - 1, the level - 1 run merged with the parents, the kept
+  // leaves, levels above `level`. perm[j] is row j of the merged run in [f[b0:b1]; parents].
+  std::vector<Key> keys;
+  keys.reserve(static_cast<size_t>(N - static_cast<int64_t>(merged.size()) + np));
+  keys.insert(keys.end(), t.keys.begin(), t.keys.begin() + b0);
+  std::vector<int64_t> perm;
+  perm.reserve(static_cast<size_t>(b1 - b0 + np));
+  bool interleaved = false;
+  for (int64_t i = b0, j = 0; i < b1 || j < np;) {
+    if (j == np || (i < b1 && detail::key_less(t.keys[i], parents[j]))) {
+      interleaved = interleaved || j > 0;
+      keys.push_back(t.keys[i]);
+      perm.push_back(i++ - b0);
+    } else {
+      keys.push_back(parents[j]);
+      perm.push_back(b1 - b0 + j++);
+    }
+  }
+  for (int64_t i : kept)
+    keys.push_back(t.keys[i]);
+  keys.insert(keys.end(), t.keys.begin() + e1, t.keys.end());
+
+  const auto dev = f.device();
+  auto pooled = remap_features(f, src, dst, nullptr, np, reduction);
+  std::vector<at::Tensor> pieces;
+  if (b0 > 0)
+    pieces.push_back(f.slice(0, 0, b0));
+  if (b1 == b0)
+    pieces.push_back(pooled);
+  else if (!interleaved) // every parent sorts after the level - 1 run
+    pieces.insert(pieces.end(), {f.slice(0, b0, b1), pooled});
+  else
+    pieces.push_back(torch::cat({f.slice(0, b0, b1), pooled}, 0).index_select(0, index_tensor(perm, dev)));
+  if (!kept.empty()) {
+    if (kept.back() - kept.front() + 1 == static_cast<int64_t>(kept.size()))
+      pieces.push_back(f.slice(0, kept.front(), kept.back() + 1));
+    else
+      pieces.push_back(f.index_select(0, index_tensor(kept, dev)));
+  }
+  if (e1 < N)
+    pieces.push_back(f.slice(0, e1, N));
+  auto feats = pieces.size() == 1 ? pieces[0] : torch::cat(pieces, 0);
+  return {Topology::make(t.config, std::move(keys)), feats};
 }
 
 // Leaf index per point (or -1).
