@@ -227,24 +227,45 @@ TEST(numeric_uniform_equivalence_with_bruteforce_reference) {
     }
 }
 
-// Per-row comparison against the legacy engine is not possible here: its output rows did not
-// match the adaptive/brute-force result even for an all-ones kernel (only the totals agree), so
-// this test checks row count and total sum. Per-row correctness is covered by the brute-force test.
+// Row-by-row comparison against the existing engine with the same random kernel. The adaptive
+// kernel orders offsets x-slowest (kernel_index); MinkowskiEngine orders them x-fastest
+// (k = (dx + 1) + 3 (dy + 1) + 9 (dz + 1)). Rows are matched by coordinate.
 TEST(numeric_uniform_equivalence_with_existing_convolution) {
     auto uc = make_uniform_case(3, 4, 11);
     minkowski::MinkowskiConvolution conv(3, 4, /*kernel_size=*/3, /*stride=*/1, /*dilation=*/1,
                                          /*bias=*/false, /*expand_coordinates=*/false,
                                          minkowski::ConvolutionMode::DEFAULT, /*dimension=*/3);
-    auto ones = torch::ones({27, 3, 4});
+    auto me_weight = torch::empty_like(uc.weight);
+    for (int dx = -1; dx <= 1; ++dx)
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dz = -1; dz <= 1; ++dz)
+                me_weight[(dx + 1) + 3 * (dy + 1) + 9 * (dz + 1)] =
+                    uc.weight[kernel_index({dx, dy, dz}, 3)];
     {
         torch::NoGradGuard ng;
-        conv->base()->kernel_.copy_(ones);
+        conv->base()->kernel_.copy_(me_weight);
     }
     auto legacy_out = conv->forward(uc.legacy);
-    auto adaptive_out = adaptive_convolution(uc.adaptive, ones,
+    auto adaptive_out = adaptive_convolution(uc.adaptive, uc.weight,
                                              config_for(AdaptiveConvMode::CenterSampled));
-    CHECK_EQ(adaptive_out.features().size(0), legacy_out.F().size(0));
-    CHECK_ALLCLOSE(adaptive_out.features().sum(), legacy_out.F().detach().sum(), 1e-3, 1e-3);
+    const int64_t n = adaptive_out.features().size(0);
+    CHECK_EQ(n, legacy_out.F().size(0));
+
+    auto lc = legacy_out.C();
+    std::map<std::array<int64_t, 3>, int64_t> legacy_row;
+    for (int64_t i = 0; i < lc.size(0); ++i)
+        legacy_row[{lc[i][1].item<int64_t>(), lc[i][2].item<int64_t>(),
+                    lc[i][3].item<int64_t>()}] = i;
+    auto ac = adaptive_out.coordinates();
+    auto order = torch::empty({n}, torch::kInt64);
+    for (int64_t i = 0; i < n; ++i) {
+        auto it = legacy_row.find(
+            {ac[i][0].item<int64_t>(), ac[i][1].item<int64_t>(), ac[i][2].item<int64_t>()});
+        CHECK(it != legacy_row.end());
+        order[i] = it->second;
+    }
+    CHECK_ALLCLOSE(adaptive_out.features(), legacy_out.F().detach().index_select(0, order), 1e-4,
+                   1e-4);
 }
 
 TEST(numeric_global_average_pool_is_volume_weighted_by_default) {

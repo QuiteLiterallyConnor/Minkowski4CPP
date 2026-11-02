@@ -630,6 +630,61 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
     add_test(NAME gaussian_tests COMMAND gaussian_tests)
 endif()
 
+# ============================================================
+# Core engine tests (tests/core)
+# ============================================================
+# Every tests/core/test_*.cpp is part of core_tests, so adding a test file needs no CMake edit.
+
+if(MINK_BUILD_TESTS)
+    file(GLOB MINK_CORE_TEST_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/test_*.cpp"
+    )
+    add_executable(core_tests
+        tests/core/main.cpp
+        ${MINK_CORE_TEST_SOURCES}
+    )
+    target_link_libraries(core_tests PRIVATE minkowski_cpp)
+    target_include_directories(core_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/core"
+    )
+    if(MINK_TORCH_CXX_FLAGS)
+        target_compile_options(core_tests PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+        )
+    endif()
+
+    enable_testing()
+    add_test(NAME core_tests COMMAND core_tests)
+
+    # Every benchmarks/core_*.cpp becomes its own executable (core engine benchmarks).
+    file(GLOB MINK_CORE_BENCH_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/core_*.cpp"
+    )
+    foreach(mink_core_bench_src IN LISTS MINK_CORE_BENCH_SOURCES)
+        get_filename_component(mink_core_bench "${mink_core_bench_src}" NAME_WE)
+        add_executable(${mink_core_bench} "${mink_core_bench_src}")
+        target_link_libraries(${mink_core_bench} PRIVATE minkowski_cpp)
+        target_include_directories(${mink_core_bench} PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(${mink_core_bench} PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+    endforeach()
+endif()
+
 # Windows resolves DLLs next to the executable, so without this the binaries
 # exit silently (0xC0000135) unless LibTorch's lib directory is on PATH.
 option(MINK_COPY_TORCH_DLLS "Copy LibTorch DLLs next to the built executables (Windows)" ON)
