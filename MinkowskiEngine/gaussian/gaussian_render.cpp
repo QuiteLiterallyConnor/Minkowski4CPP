@@ -511,6 +511,49 @@ struct KernelRasterFunction
 };
 
 #ifdef USE_CUDA
+struct FusedGatherFunction : public torch::autograd::Function<FusedGatherFunction> {
+  static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &means,
+                            const at::Tensor &proj, const at::Tensor &opacity,
+                            const at::Tensor &colors, const at::Tensor &ids) {
+    const auto n = proj.size(0);
+    TORCH_CHECK(proj.dim() == 2 && proj.size(1) == 10 &&
+                    means.sizes() == at::IntArrayRef({n, 2}) && opacity.numel() == n &&
+                    colors.sizes() == at::IntArrayRef({n, 3}),
+                "gather_attributes: invalid attribute shapes");
+    for (const auto *t : {&means, &proj, &opacity, &colors})
+      TORCH_CHECK(t->is_cuda() && t->scalar_type() == at::kFloat &&
+                      t->device() == proj.device(),
+                  "gather_attributes: attributes must be float32 on one CUDA device");
+    TORCH_CHECK(ids.dim() == 1 && ids.is_contiguous() && ids.scalar_type() == at::kLong &&
+                    ids.device() == proj.device(),
+                "gather_attributes: ids must be contiguous CUDA int64 [M]");
+    auto out = at::empty({ids.numel(), 10}, proj.options());
+    detail::gather_attributes_forward_cuda(means, proj.contiguous(),
+                                           opacity.reshape({-1}).contiguous(),
+                                           colors.contiguous(), ids, out);
+    // The backward only needs row IDs and shapes, not the attribute values.
+    ctx->save_for_backward({ids});
+    ctx->saved_data["n"] = n;
+    ctx->saved_data["opacity_shape"] = opacity.sizes().vec();
+    return out;
+  }
+
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext *ctx,
+                                                 torch::autograd::variable_list grads) {
+    const auto ids = ctx->get_saved_variables()[0];
+    const auto n = ctx->saved_data["n"].toInt();
+    // One allocation and zero-fill, four disjoint contiguous views. Unselected
+    // rows and unused projection columns retain exactly zero gradients.
+    auto storage = at::zeros({n * 16}, grads[0].options());
+    auto gm = storage.slice(0, 0, n * 2).view({n, 2});
+    auto gp = storage.slice(0, n * 2, n * 12).view({n, 10});
+    auto go = storage.slice(0, n * 12, n * 13);
+    auto gc = storage.slice(0, n * 13, n * 16).view({n, 3});
+    detail::gather_attributes_backward_cuda(ids, grads[0].contiguous(), gm, gp, go, gc);
+    return {gm, gp, go.reshape(ctx->saved_data["opacity_shape"].toIntVector()), gc, at::Tensor()};
+  }
+};
+
 // One autograd node for the whole projection (see gaussian_project_cuda.cu).
 struct FusedProjectFunction : public torch::autograd::Function<FusedProjectFunction> {
   static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &positions,
@@ -562,6 +605,15 @@ bool &cuda_fused_projection() {
 bool &cuda_fused_tiles() {
   static bool on = true;
   return on;
+}
+bool &cuda_fused_gather() {
+  static bool on = true;
+  return on;
+}
+at::Tensor gather_attributes(const at::Tensor &means, const at::Tensor &proj,
+                              const at::Tensor &opacity, const at::Tensor &colors,
+                              const at::Tensor &ids) {
+  return FusedGatherFunction::apply(means, proj, opacity, colors, ids);
 }
 } // namespace detail
 #endif
@@ -769,14 +821,22 @@ RenderOutput render_gaussians(const at::Tensor &positions,
                      .sum();
   }
 
-  auto gather = [&](const at::Tensor &t) { return t.index_select(0, order_ids); };
-  const auto attrs = at::cat(
-      {at::stack({gather(means2d.select(1, 0)), gather(means2d.select(1, 1)),
-                  gather(conic_a), gather(conic_b), gather(conic_c),
-                  gather(opacities.reshape({-1})), gather(z)},
-                 1),
-       gather(colors)},
-      1);
+  at::Tensor attrs;
+#ifdef USE_CUDA
+  if (fused_projection && detail::cuda_fused_gather()) {
+    attrs = detail::gather_attributes(means2d, proj, opacities, colors, order_ids);
+  } else
+#endif
+  {
+    auto gather = [&](const at::Tensor &t) { return t.index_select(0, order_ids); };
+    attrs = at::cat(
+        {at::stack({gather(means2d.select(1, 0)), gather(means2d.select(1, 1)),
+                    gather(conic_a), gather(conic_b), gather(conic_c),
+                    gather(opacities.reshape({-1})), gather(z)},
+                   1),
+         gather(colors)},
+        1);
+  }
 
   at::Tensor background = options.background.defined()
                               ? options.background.to(float_options)
