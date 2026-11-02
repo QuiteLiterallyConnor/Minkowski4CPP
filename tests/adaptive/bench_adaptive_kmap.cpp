@@ -3,6 +3,7 @@
 //                          [--modes center,volume,overlap] [--shift 0] [--interp 20000]
 //                          [--conv none|cpu|cuda] [--cout 16] [--dtype f32|f64]
 //                          [--region 16] [--phases cold,warm] [--drop-empty 0|1]
+//                          [--pool none|cpu|cuda]
 // Workload: half the points uniform in [0,256)^3, half in [0,16)^3; voxelized at level 0 and
 // the region [0,R)^3 refined to `depth`, R = --region (16 = the adaptive_bench workload).
 // --phases picks which kernel-map timings run (cold, warm or both).
@@ -20,6 +21,12 @@
 //  conv_<mode>_fwdbwd_ms  : forward + backward (features and weight), synchronized
 //  conv_<mode>_cuda_ms    : forward time between CUDA events (cuda only)
 //  cuda_max_alloc_mb / cuda_max_reserved_mb : caching-allocator peaks over the conv runs
+// With --pool cpu|cuda only adaptive_pool (Mean) is timed, on the features moved to the device:
+//  pool_to<L>_fwd_ms      : adaptive_pool(t, L) from the full tensor, forward only
+//  pool_chain_fwd_ms      : pool to depth-1, then depth-2, ... 0 (each step on the previous
+//                           result, as in a network), forward only, synchronized
+//  pool_chain_fwdbwd_ms   : the same chain + backward of sum(output) to the input features
+//  pool_to<L>_leaves      : leaves after pooling to level L
 // Always: peak_working_set_mb (process peak, Windows) at exit.
 #include <algorithm>
 #include <chrono>
@@ -66,6 +73,7 @@ struct Args {
     std::string dtype = "f32";
     double region = 16.0;
     std::string phases = "cold,warm";
+    std::string pool = "none";
 };
 
 Args parse(int argc, char** argv) {
@@ -86,6 +94,7 @@ Args parse(int argc, char** argv) {
         else if (k == "--region") a.region = std::atof(v.c_str());
         else if (k == "--phases") a.phases = v;
         else if (k == "--drop-empty") a.drop_empty = std::atoi(v.c_str()) != 0;
+        else if (k == "--pool") a.pool = v;
         else {
             std::cerr << "unknown argument " << k << "\n";
             std::exit(2);
@@ -225,6 +234,48 @@ int run_conv(const Args& a, const AdaptiveSparseTensor& t_cpu) {
     return 0;
 }
 
+int run_pool(const Args& a, const AdaptiveSparseTensor& t_cpu) {
+    const torch::Device dev = a.pool == "cuda" ? torch::Device(torch::kCUDA) : torch::Device(torch::kCPU);
+    if (dev.is_cuda() && !torch::cuda::is_available()) {
+        std::cerr << "CUDA not available\n";
+        return 3;
+    }
+    const auto dtype = a.dtype == "f64" ? torch::kFloat64 : torch::kFloat32;
+    auto t = t_cpu.with_features(t_cpu.features().to(dtype)).to(dev);
+    print("leaves", static_cast<double>(t.size()));
+    for (int64_t L = static_cast<int64_t>(a.depth) - 1; L >= 0; --L) {
+        const auto lvl = static_cast<uint32_t>(L);
+        print("pool_to" + std::to_string(L) + "_leaves",
+              static_cast<double>(adaptive_pool(t, lvl, Reduction::Mean).size()));
+        report("pool_to" + std::to_string(L) + "_fwd", a, [&] { sync(dev); },
+               [&] {
+                   torch::NoGradGuard ng;
+                   auto y = adaptive_pool(t, lvl, Reduction::Mean);
+                   sync(dev);
+               });
+    }
+    const auto chain = [&](const AdaptiveSparseTensor& x) {
+        AdaptiveSparseTensor y = x;
+        for (int64_t L = static_cast<int64_t>(a.depth) - 1; L >= 0; --L)
+            y = adaptive_pool(y, static_cast<uint32_t>(L), Reduction::Mean);
+        return y;
+    };
+    report("pool_chain_fwd", a, [&] { sync(dev); },
+           [&] {
+               torch::NoGradGuard ng;
+               auto y = chain(t);
+               sync(dev);
+           });
+    report("pool_chain_fwdbwd", a, [&] { sync(dev); },
+           [&] {
+               auto f = t.features().detach().requires_grad_(true);
+               auto y = chain(t.with_features(f));
+               y.features().sum().backward();
+               sync(dev);
+           });
+    return 0;
+}
+
 void print_peak_ws() {
 #ifdef _WIN32
     PROCESS_MEMORY_COUNTERS pmc{};
@@ -257,6 +308,11 @@ int main(int argc, char** argv) {
     print("points", static_cast<double>(a.n));
     print("depth", a.depth);
     print("shift", a.shift);
+    if (a.pool != "none") {
+        const int rc = run_pool(a, t);
+        print_peak_ws();
+        return rc;
+    }
     if (a.conv != "none") {
         const int rc = run_conv(a, t);
         print_peak_ws();
