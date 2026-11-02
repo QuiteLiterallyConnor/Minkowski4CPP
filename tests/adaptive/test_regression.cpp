@@ -53,3 +53,34 @@ TEST(regression_adaptive_is_opt_in) {
     CHECK_EQ(a.size(), int64_t(1));
     CHECK(torch::equal(before, t.C()));
 }
+
+namespace {
+
+// Prune every row, then prune the (now empty) result again. The second call runs the coordinate map's prune()
+// with N == 0; on CUDA it used to read the scan buffer at index N - 1 and fail with "invalid argument".
+void prune_to_empty_and_again(torch::Device device) {
+    auto t = make_legacy(50, 3);
+    auto feats = t.F().to(device).clone().requires_grad_(true);
+    minkowski::SparseTensor x(feats, t.C().to(device));
+    minkowski::MinkowskiPruning prune;
+    auto none = torch::zeros({x.F().size(0)}, torch::TensorOptions().dtype(torch::kBool).device(device));
+    auto empty = prune->forward(x, none);
+    CHECK_EQ(empty.F().size(0), int64_t(0));
+    CHECK_EQ(empty.C().size(0), int64_t(0));
+    auto none2 = torch::zeros({0}, torch::TensorOptions().dtype(torch::kBool).device(device));
+    auto again = prune->forward(empty, none2);
+    CHECK_EQ(again.F().size(0), int64_t(0));
+    CHECK_EQ(again.F().size(1), int64_t(3));
+    again.F().sum().backward();
+    CHECK(feats.grad().defined());
+    CHECK_EQ(feats.grad().abs().sum().item<double>(), 0.0);
+}
+
+}  // namespace
+
+TEST(regression_pruning_to_empty_and_again) { prune_to_empty_and_again(torch::kCPU); }
+
+TEST(regression_pruning_to_empty_and_again_cuda) {
+    if (!torch::cuda::is_available()) throw mink_test::Skip("CUDA not available");
+    prune_to_empty_and_again(torch::kCUDA);
+}
