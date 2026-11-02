@@ -90,8 +90,7 @@ void check_close(const at::Tensor &a, const at::Tensor &b, double rtol, double a
   const double diff = (a.cpu().to(torch::kFloat64) - b.cpu().to(torch::kFloat64)).abs().max().item<double>();
   const double scale = b.cpu().to(torch::kFloat64).abs().max().item<double>();
   std::cout << "         " << what << ": max abs diff " << diff << " (relative "
-            << (scale > 0 ? diff / scale : 0.0) << ")
-";
+            << (scale > 0 ? diff / scale : 0.0) << ")\n";
   if (!(diff <= rtol * scale + atol))
     FAIL_AT(what << ": max abs diff " << diff << " vs scale " << scale);
 }
