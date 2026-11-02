@@ -115,7 +115,9 @@ std::pair<uint64_t, uint64_t> cuda_peak(const torch::Device &device) {
   if (device.is_cuda()) {
     const auto stats =
         c10::cuda::CUDACachingAllocator::getDeviceStats(device.index());
-    const auto all = static_cast<size_t>(c10::CachingAllocator::StatType::AGGREGATE);
+    // c10::CachingDeviceAllocator names StatType in LibTorch 2.5 (CUDA 12.4
+    // profile) and re-exports c10::CachingAllocator's in 2.15.
+    const auto all = static_cast<size_t>(c10::CachingDeviceAllocator::StatType::AGGREGATE);
     return {static_cast<uint64_t>(stats.allocated_bytes[all].peak),
             static_cast<uint64_t>(stats.reserved_bytes[all].peak)};
   }
