@@ -61,7 +61,17 @@ TEST(gaussian_fused_adam_matches_libtorch_update) {
     // p + update can land on a neighbouring float: measure parameter differences in units of the
     // float spacing at |p| + lr (at most one more ulp per step) and the moments relatively.
     const auto spacing = (p_ref.abs() + lr) * std::ldexp(1.0, -23);
-    const double ulps = ((p - p_ref).abs() / spacing).max().item<double>();
+    const auto ratio = (p - p_ref).abs() / spacing;
+    const double ulps = ratio.max().item<double>();
+    if (ulps > 1.0) {
+      const int64_t w = ratio.argmax().item<int64_t>();
+      std::cout.precision(10);
+      std::cout << "         worst element " << w << ": p " << p[w].item<float>() << " vs "
+                << p_ref[w].item<float>() << ", g " << g[w].item<float>() << ", m1 "
+                << m1[w].item<float>() << " vs " << m1_ref[w].item<float>() << ", m2 "
+                << m2[w].item<float>() << " vs " << m2_ref[w].item<float>() << "\n";
+      std::cout.precision(6);
+    }
     const double dm1 = max_rel(m1, m1_ref), dm2 = max_rel(m2, m2_ref);
     const int64_t differ = (p != p_ref).sum().item<int64_t>();
     std::cout << "         step " << step << ": max |dp| " << ulps << " ulp, m1 rel " << dm1
