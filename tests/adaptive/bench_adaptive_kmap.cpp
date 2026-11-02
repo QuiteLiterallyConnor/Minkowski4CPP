@@ -2,7 +2,7 @@
 // Run: adaptive_kmap_bench [--n 20000] [--depth 4] [--channels 8] [--warmup 2] [--reps 5]
 //                          [--modes center,volume,overlap] [--shift 0] [--interp 20000]
 //                          [--conv none|cpu|cuda] [--cout 16] [--dtype f32|f64]
-//                          [--region 16] [--phases cold,warm] [--drop-empty 0|1]
+//                          [--region 16] [--phases cold,warm] [--drop-empty 0|1] [--group-mb M]
 // Workload: half the points uniform in [0,256)^3, half in [0,16)^3; voxelized at level 0 and
 // the region [0,R)^3 refined to `depth`, R = --region (16 = the adaptive_bench workload).
 // --phases picks which kernel-map timings run (cold, warm or both).
@@ -66,6 +66,7 @@ struct Args {
     std::string dtype = "f32";
     double region = 16.0;
     std::string phases = "cold,warm";
+    double group_mb = -1.0;  // < 0: library default (CUDA apply_map group budget, 0 = one group)
 };
 
 Args parse(int argc, char** argv) {
@@ -86,6 +87,7 @@ Args parse(int argc, char** argv) {
         else if (k == "--region") a.region = std::atof(v.c_str());
         else if (k == "--phases") a.phases = v;
         else if (k == "--drop-empty") a.drop_empty = std::atoi(v.c_str()) != 0;
+        else if (k == "--group-mb") a.group_mb = std::atof(v.c_str());
         else {
             std::cerr << "unknown argument " << k << "\n";
             std::exit(2);
@@ -237,6 +239,9 @@ void print_peak_ws() {
 
 int main(int argc, char** argv) {
     const Args a = parse(argc, argv);
+    if (a.group_mb >= 0)
+        minkowski::adaptive::detail::cuda_apply_map_group_bytes() =
+            static_cast<int64_t>(a.group_mb * 1048576.0);
     torch::manual_seed(0);
     auto pts = torch::cat({torch::rand({a.n / 2, 3}, torch::kFloat64) * 256.0,
                            torch::rand({a.n - a.n / 2, 3}, torch::kFloat64) * 16.0});
