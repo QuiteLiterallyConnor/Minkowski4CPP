@@ -151,10 +151,12 @@ public:
   // allocator backend will be ignored when coordinate map backend is CPU
   CoordinateMapManager(
       MinkowskiAlgorithm::Mode algo = MinkowskiAlgorithm::DEFAULT,
-      size_type num_threads = 0)
+      int num_threads = 0)
       : m_algorithm(algo) {
+    // Only an explicit positive request changes the OpenMP thread count. The OpenMP runtime
+    // (libiomp5) is shared with ATen, so omp_set_num_threads here sets the intra-op thread
+    // count of the whole calling thread; 0 or negative keeps the current setting.
     if (num_threads > 0) {
-      // Doesn't seem to work. use `export OMP_NUM_THREADS=N;` in bash.
       omp_set_dynamic(0);
       omp_set_num_threads(num_threads);
     }
