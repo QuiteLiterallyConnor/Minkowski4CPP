@@ -490,24 +490,60 @@ std::mutex &part_device_mutex() {
   return m;
 }
 
-PartDevice part_on_device(const PartMap &a, const at::Device &device) {
+// The device copies of the parts' pair arrays. Parts without one on `device` are uploaded
+// together: their arrays are packed into one int32 (and one float64) host buffer, copied with
+// one transfer each, and every part gets views into it. (A batch's buffer stays allocated until
+// all of its parts are freed.)
+std::vector<PartDevice> parts_on_device(const std::vector<std::shared_ptr<const PartMap>> &pm,
+                                        const at::Device &device) {
   std::lock_guard<std::mutex> lock(part_device_mutex());
-  for (const auto &d : a.device_copies)
-    if (d.device == device)
-      return d;
-  PartDevice d;
-  d.device = device;
-  const auto upload = [&](const auto &v, at::ScalarType type) {
-    using T = typename std::decay_t<decltype(v)>::value_type;
-    return torch::from_blob(const_cast<T *>(v.data()), {static_cast<int64_t>(v.size())}, type)
-        .to(device);
-  };
-  d.in = upload(a.in, torch::kInt32);
-  d.out = upload(a.out, torch::kInt32);
-  if (a.weighted())
-    d.weight = upload(a.weight, torch::kFloat64);
-  a.device_copies.push_back(d);
-  return d;
+  std::vector<PartDevice> out(pm.size());
+  std::vector<size_t> missing;
+  for (size_t p = 0; p < pm.size(); ++p) {
+    bool found = false;
+    for (const auto &d : pm[p]->device_copies)
+      if (d.device == device) {
+        out[p] = d;
+        found = true;
+        break;
+      }
+    if (!found)
+      missing.push_back(p);
+  }
+  if (missing.empty())
+    return out;
+  const bool weighted = pm[missing[0]]->weighted();
+  std::vector<int32_t> pairs;
+  std::vector<double> weights;
+  for (size_t p : missing) {
+    pairs.insert(pairs.end(), pm[p]->in.begin(), pm[p]->in.end());
+    pairs.insert(pairs.end(), pm[p]->out.begin(), pm[p]->out.end());
+    if (weighted)
+      weights.insert(weights.end(), pm[p]->weight.begin(), pm[p]->weight.end());
+  }
+  const auto dev_pairs =
+      torch::from_blob(pairs.data(), {static_cast<int64_t>(pairs.size())}, torch::kInt32).to(device);
+  at::Tensor dev_weights;
+  if (weighted)
+    dev_weights = torch::from_blob(weights.data(), {static_cast<int64_t>(weights.size())},
+                                   torch::kFloat64)
+                      .to(device);
+  int64_t at = 0, wat = 0;
+  for (size_t p : missing) {
+    const int64_t n = static_cast<int64_t>(pm[p]->in.size());
+    PartDevice d;
+    d.device = device;
+    d.in = dev_pairs.slice(0, at, at + n);
+    d.out = dev_pairs.slice(0, at + n, at + 2 * n);
+    at += 2 * n;
+    if (weighted) {
+      d.weight = dev_weights.slice(0, wat, wat + n);
+      wat += n;
+    }
+    pm[p]->device_copies.push_back(d);
+    out[p] = d;
+  }
+  return out;
 }
 
 // compose_parts on a CUDA device: the same pairs in the same order, written by one kernel
@@ -555,9 +591,8 @@ AdaptiveKernelMap compose_parts_device(const std::vector<std::shared_ptr<const P
       }
   }
   const int64_t segments = static_cast<int64_t>(table.size()) / 4;
-  std::vector<PartDevice> copies(np);
+  const std::vector<PartDevice> copies = parts_on_device(pm, device);
   for (size_t p = 0; p < np; ++p) {
-    copies[p] = part_on_device(*pm[p], device);
     table.push_back(reinterpret_cast<int64_t>(copies[p].in.data_ptr()));
     table.push_back(reinterpret_cast<int64_t>(copies[p].out.data_ptr()));
     table.push_back(copies[p].weight.defined() ? reinterpret_cast<int64_t>(copies[p].weight.data_ptr())
