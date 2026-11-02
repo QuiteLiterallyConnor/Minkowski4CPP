@@ -1074,6 +1074,18 @@ CoordinateMapGPU<coordinate_type, TemplatedAllocator>::prune(
   ASSERT(N == keep_end - keep_begin, "Invalid keep size");
   LOG_DEBUG("Prune size:", N);
 
+  if (N == 0) {
+    // Pruning an empty map (e.g. a tensor that an earlier pruning emptied)
+    // gives an empty map. The scan below would read d_inclusive_scan[N - 1],
+    // one element before a zero-size buffer ("invalid argument"). Reserve one
+    // slot so the result owns a hash table like every other empty map.
+    self_type pruned_map(1, m_coordinate_size, m_hashtable_occupancy,
+                         base_type::m_tensor_stride, m_map_allocator,
+                         base_type::m_byte_allocator);
+    pruned_map.m_size = 0;
+    return pruned_map;
+  }
+
   // exclusive sum for coordinate copy.
   auto const inclusive_scan_size = N * sizeof(index_type);
   index_type *d_inclusive_scan =
