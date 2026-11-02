@@ -519,3 +519,54 @@ TEST(part_reuse_device_budget_cross_stream_eviction) {
     CHECK(torch::equal(arrays.weight.cpu(), expected.map.weight));
 #endif
 }
+
+
+TEST(part_reuse_device_budget_mixed_width_partial_host_eviction) {
+    if (!torch::cuda::is_available()) throw mink_test::Skip("CUDA not available");
+    const auto cfg = make_config(3, 2.0, 0.0);
+    std::vector<AdaptiveSparseTensor> samples;
+    for (int i = 0; i < 8; ++i) samples.push_back(make_sample(210 + i, 3, cfg));
+    int small = 0, large = 0;
+    for (int i = 1; i < 8; ++i) {
+        if (samples[i].size() < samples[small].size()) small = i;
+        if (samples[i].size() > samples[large].size()) large = i;
+    }
+    CHECK(samples[small].size() < samples[large].size());
+    struct NarrowLimit {
+        int64_t previous = detail::cuda_part_compose_narrow_limit();
+        ~NarrowLimit() { detail::cuda_part_compose_narrow_limit() = previous; }
+    } restore;
+    detail::cuda_part_compose_narrow_limit() = samples[small].size();
+    AdaptiveKernelConfig kc;
+    const auto lone = make_batch(samples, {small}, 6, cfg);
+    const auto wide = make_batch(samples, {large}, 6, cfg);
+    const size_t narrow_pairs = size_t(full_build(lone, kc).map.in_index.numel());
+    const size_t wide_pairs = size_t(full_build(wide, kc).map.in_index.numel());
+    size_t narrow_host_bytes = 0;
+    {
+        PartReuse measure(size_t(1) << 30);
+        KernelMapCache::instance().get_or_build(lone, kc);
+        narrow_host_bytes = KernelMapCache::instance().stats().part_bytes;
+    }
+    auto moved = make_batch(samples, {large, small}, 6, cfg, 100).to(torch::kCUDA);
+    const auto expected = full_build(moved, kc);
+    DevicePartBudget unlimited(size_t(-1));
+    PartReuse on(size_t(1) << 30);
+    auto &cache = KernelMapCache::instance();
+    cache.get_or_build(make_batch(samples, {large, small}, 6, cfg), kc);
+    const auto held = cache.get_or_build(moved, kc, false);
+    const size_t original_charge = narrow_pairs * 4 + wide_pairs * 8;
+    CHECK_EQ(cache.stats().part_device_bytes, original_charge); // distinct 16/32-bit slabs
+    CHECK_EQ(cache.stats().part_device_groups, size_t(1));
+    cache.set_part_reuse_bytes(narrow_host_bytes); // newest part is narrow; wide owner expires
+    CHECK_EQ(cache.stats().part_bytes, narrow_host_bytes);
+    CHECK_EQ(cache.stats().part_device_bytes, original_charge); // conservative group accounting
+    cache.set_part_device_bytes(original_charge - 1);
+    CHECK_EQ(cache.stats().part_device_bytes, size_t(0));
+    CHECK_EQ(cache.stats().part_device_groups, size_t(0));
+    CHECK_EQ(cache.stats().part_bytes, narrow_host_bytes);
+    const auto a = held.device->get(held.map, torch::kCUDA, torch::kFloat64, true);
+    CHECK(torch::equal(a.in_index.cpu(), expected.map.in_index));
+    CHECK(torch::equal(a.out_index.cpu(), expected.map.out_index));
+    CHECK(torch::equal(a.weight.cpu(), expected.map.weight));
+}
