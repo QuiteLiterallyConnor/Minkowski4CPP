@@ -533,10 +533,10 @@ TEST(part_reuse_device_budget_mixed_width_partial_host_eviction) {
     }
     CHECK(samples[small].size() < samples[large].size());
     struct NarrowLimit {
-        int64_t previous = detail::cuda_part_compose_narrow_limit();
-        ~NarrowLimit() { detail::cuda_part_compose_narrow_limit() = previous; }
+        int64_t previous = minkowski::adaptive::detail::cuda_part_compose_narrow_limit();
+        ~NarrowLimit() { minkowski::adaptive::detail::cuda_part_compose_narrow_limit() = previous; }
     } restore;
-    detail::cuda_part_compose_narrow_limit() = samples[small].size();
+    minkowski::adaptive::detail::cuda_part_compose_narrow_limit() = samples[small].size();
     AdaptiveKernelConfig kc;
     const auto lone = make_batch(samples, {small}, 6, cfg);
     const auto wide = make_batch(samples, {large}, 6, cfg);
