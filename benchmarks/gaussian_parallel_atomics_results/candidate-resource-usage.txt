@@ -1,0 +1,17 @@
+
+Fatbin elf code:
+================
+arch = sm_75
+code version = [1,8]
+host = windows
+compile_size = 64bit
+
+Resource usage:
+ Common:
+  GLOBAL:40 CONSTANT[4]:320
+ Function _ZN9minkowski8gaussian6detail56_GLOBAL__N__73898884_23_gaussian_raster_cuda_cu_65d5bd5322raster_backward_kernelILb0EEEvPKfPKiS7_S5_iiiS5_S5_S7_Pf:
+  REG:62 STACK:0 SHARED:11268 LOCAL:0 CONSTANT[0]:432 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN9minkowski8gaussian6detail56_GLOBAL__N__73898884_23_gaussian_raster_cuda_cu_65d5bd5322raster_backward_kernelILb1EEEvPKfPKiS7_S5_iiiS5_S5_S7_Pf:
+  REG:58 STACK:0 SHARED:11268 LOCAL:0 CONSTANT[0]:432 TEXTURE:0 SURFACE:0 SAMPLER:0
+ Function _ZN9minkowski8gaussian6detail56_GLOBAL__N__73898884_23_gaussian_raster_cuda_cu_65d5bd5321raster_forward_kernelEPKfPKiS6_S4_iiiPfS7_Pi:
+  REG:30 STACK:0 SHARED:10240 LOCAL:0 CONSTANT[0]:424 TEXTURE:0 SURFACE:0 SAMPLER:0

@@ -1,0 +1,13 @@
+Test project C:/Users/User/Work/mink-build/gauss-cull-cpu
+    Start 1: adaptive_tests
+1/4 Test #1: adaptive_tests ....................   Passed   34.12 sec
+    Start 2: adaptive_vs_uniform_bench_smoke
+2/4 Test #2: adaptive_vs_uniform_bench_smoke ...   Passed    1.78 sec
+    Start 3: gaussian_tests
+3/4 Test #3: gaussian_tests ....................   Passed    3.71 sec
+    Start 4: test_framework_contract
+4/4 Test #4: test_framework_contract ...........   Passed    0.07 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =  39.80 sec

@@ -1,0 +1,3 @@
+run cuda n=139410 512px: fwd 10.3836 ms, bwd 15.0187 ms, pairs 499846
+run cuda n=139410 1024px: fwd 54.395 ms, bwd 83.9963 ms, pairs 1242773
+wrote C:\Users\User\Work\mink-lab\results\round10\gaussian-atomics\ab\render_a0_r1.json

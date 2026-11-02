@@ -1,0 +1,23 @@
+========= COMPUTE-SANITIZER
+         per_tile=1 max grad diff=0
+         per_tile=31 max grad diff=9.53674e-07
+         per_tile=255 max grad diff=0
+         per_tile=256 max grad diff=0
+         per_tile=257 max grad diff=0
+         per_tile=513 max grad diff=0
+[ PASS ] gaussian_parallel_atomics_match_serial_atomics_at_batch_edges
+[ PASS ] gaussian_parallel_atomics_nondefault_stream_and_zero_loss
+         attr=0 FD=0.0435452 analytic=0.043576
+         attr=1 FD=0.15022 analytic=0.150127
+         attr=2 FD=-47.2768 analytic=-47.2758
+         attr=3 FD=11.6264 analytic=11.6258
+         attr=4 FD=-27.7752 analytic=-27.7745
+         attr=5 FD=27.2372 analytic=27.2371
+         attr=6 FD=2.0109 analytic=2.01087
+         attr=7 FD=1.82603 analytic=1.82605
+         attr=8 FD=1.93031 analytic=1.93031
+         attr=9 FD=1.99364 analytic=1.99367
+[ PASS ] gaussian_parallel_atomics_finite_difference
+
+3 passed, 0 failed, 68 skipped
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

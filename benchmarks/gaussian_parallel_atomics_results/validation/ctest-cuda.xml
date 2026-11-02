@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="(empty)"
+	tests="4"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname=""
+	time="79"
+	timestamp="2026-11-02T20:39:14"
+	>
+	<testcase name="adaptive_tests" classname="adaptive_tests" time="64.1338" status="run">
+		<properties/>
+		<system-out>[ PASS ] geometry_voxel_size_halves_per_level
+[ PASS ] geometry_anisotropic_voxel_size
+[ PASS ] geometry_bounds_and_center
+[ PASS ] geometry_half_open_ownership
+[ PASS ] geometry_locate_is_consistent_with_bounds
+[ PASS ] geometry_parent_child_roundtrip
+[ PASS ] geometry_parent_of_negative_coordinates_floors
+[ PASS ] geometry_children_tile_parent_exactly
+[ PASS ] geometry_keys_at_different_levels_never_collide
+[ PASS ] geometry_large_coordinates_roundtrip
+[ PASS ] geometry_two_and_four_dimensional
+[ PASS ] config_accepts_consistent_resolution
+[ PASS ] config_rejects_inconsistent_resolution
+[ PASS ] config_rejects_nonpositive_and_unsupported_depth
+[ PASS ] config_supports_anisotropic_resolution
+[ PASS ] topology_empty_tensor
+[ PASS ] topology_from_points_quantizes_to_base_level
+[ PASS ] topology_refine_creates_all_children_at_next_level
+[ PASS ] topology_refine_region_boundary_is_half_open
+[ PASS ] topology_refine_to_target_level_and_idempotence
+[ PASS ] topology_refine_beyond_max_depth_throws_or_clamps
+[ PASS ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="adaptive_vs_uniform_bench_smoke" classname="adaptive_vs_uniform_bench_smoke" time="3.83447" status="run">
+		<properties/>
+		<system-out>{"kind":"case","dataset":"clustered","method":"u_coarse","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"12 Gaussian clusters (sigma 2/4/8) = 90%, uniform background 10%","dataset_load_ms":119.828,"build_ms":{"med":0.4805,"min":0.4805,"max":0.4805},"voxels":709,"levels":[709],"voxel_size":8.0,"matched_target":1024,"covered_volume":363008.0,"feature_bytes":45376,"coord_bytes_adaptive":19852,"coord_bytes_mink":11344,"accuracy":{"test_points":300,"ref_std":0.6932618056885522,"coverage":0.8266666666666667,"rmse_nearest_all":0.5192889984051806,"rmse_nearest_covered":0.46663458155926546,"nrmse_nearest_all":0.7490517927630808,"interp_nearest_ms":0.1176,"interp_multilinear_ms":0.2945,"ml_queries":200,"rmse_multilinear_all":0.45820226133839537},"adaptive_engine":{"first_conv_ms":18.7986,"kmap_pairs":6577,"kmap_bytes":210464,"avg_neighbors":9.276445698166432,"kmap_cold_ms":{"med":1.4428,"min":1.4428,"max":1.4428},"fwd_ms":{"med":11.6785,"min":11.6785,"max":11.6785},"fwd_bw...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="gaussian_tests" classname="gaussian_tests" time="10.791" status="run">
+		<properties/>
+		<system-out>[ PASS ] gaussian3d_identity_covariance_and_density
+[ PASS ] gaussian3d_anisotropic_rotated_covariance_is_symmetric
+[ PASS ] gaussian3d_rejects_invalid_parameters
+[ PASS ] gaussian3d_overlap_sampling_and_bounds
+[ PASS ] gaussian_tensor_covariance_and_shape
+[ PASS ] gaussian_tensor_select_remove_and_filter
+[ PASS ] gaussian_tensor_concat_clone_and_empty
+[ PASS ] gaussian_tensor_transform_and_gradients
+[ PASS ] gaussian_optimizer_reduces_rgb_reconstruction_loss
+[ PASS ] gaussian_cuda_kernels_match_tensor_reference
+[ PASS ] ply_compressed_and_uncompressed_are_both_detected
+[ PASS ] ply_loads_expected_layout
+[ PASS ] ply_values_are_valid
+[ PASS ] ply_covariances_are_symmetric_positive_semidefinite
+[ PASS ] ply_filter_opacity_and_bounds
+[ PASS ] ply_select_remove_partition
+[ PASS ] ply_transform_round_trip_restores_scene
+[ PASS ] ply_optimizer_reduces_color_loss
+[ PASS ] ply_rejects_bad_files
+[ PASS ] ply_cuda_transform_matches_cpu
+[ PASS ] gaussian_render_single_gaussian_at_center
+[ PASS ] gaussian_render_empty_s...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="test_framework_contract" classname="test_framework_contract" time="0.0587391" status="run">
+		<properties/>
+		<system-out>9 test-framework contract cases passed
+</system-out>
+	</testcase>
+</testsuite>
