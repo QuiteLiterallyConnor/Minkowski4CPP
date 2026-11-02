@@ -473,7 +473,57 @@ struct KernelRasterFunction
   }
 };
 
+#ifdef USE_CUDA
+// One autograd node for the whole projection (see gaussian_project_cuda.cu).
+struct FusedProjectFunction : public torch::autograd::Function<FusedProjectFunction> {
+  static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &positions,
+                            const at::Tensor &rotations, const at::Tensor &scales,
+                            const at::Tensor &world_to_camera,
+                            const std::vector<double> &params) {
+    const auto p = positions.contiguous(), q = rotations.contiguous(), s = scales.contiguous();
+    const auto w = world_to_camera.contiguous();
+    auto out = at::empty({p.size(0), detail::kProjectColumns}, p.options());
+    detail::project_forward_cuda(p, q, s, w, unpack(params), out);
+    ctx->save_for_backward({p, q, s, w});
+    ctx->saved_data["params"] = params;
+    return out;
+  }
+
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext *ctx,
+                                                 torch::autograd::variable_list grads) {
+    const auto saved = ctx->get_saved_variables();
+    const auto &p = saved[0], &q = saved[1], &s = saved[2], &w = saved[3];
+    auto gp = at::empty_like(p), gq = at::empty_like(q), gs = at::empty_like(s);
+    if (grads[0].defined())
+      detail::project_backward_cuda(p, q, s, w,
+                                    unpack(ctx->saved_data["params"].toDoubleVector()),
+                                    grads[0].contiguous(), gp, gq, gs);
+    else {
+      gp.zero_();
+      gq.zero_();
+      gs.zero_();
+    }
+    return {gp, gq, gs, at::Tensor(), at::Tensor()};
+  }
+
+  static detail::ProjectParams unpack(const std::vector<double> &v) {
+    return {static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2]),
+            static_cast<float>(v[3]), static_cast<float>(v[4]), static_cast<float>(v[5]),
+            static_cast<float>(v[6]), static_cast<float>(v[7]), static_cast<float>(v[8])};
+  }
+};
+#endif
+
 } // namespace
+
+#ifdef USE_CUDA
+namespace detail {
+bool &cuda_fused_projection() {
+  static bool on = true;
+  return on;
+}
+} // namespace detail
+#endif
 
 RenderOutput render_gaussians(const at::Tensor &positions,
                               const at::Tensor &rotations,
@@ -522,52 +572,85 @@ RenderOutput render_gaussians(const at::Tensor &positions,
   const auto rotation = world_to_camera.slice(0, 0, 3).slice(1, 0, 3);
   const auto translation = world_to_camera.slice(0, 0, 3).select(1, 3);
 
-  const auto camera_points =
-      at::matmul(positions, rotation.transpose(0, 1)) + translation;
-  const auto z = camera_points.select(1, 2);
-  const auto safe_z = z.clamp_min(static_cast<double>(camera.near_plane));
-  const auto tx = camera_points.select(1, 0) / safe_z;
-  const auto ty = camera_points.select(1, 1) / safe_z;
-  const auto x2 = camera.fx * tx + camera.cx;
-  const auto y2 = camera.fy * ty + camera.cy;
-  auto means2d = at::stack({x2, y2}, 1);
-  if (means2d.requires_grad())
-    means2d.retain_grad();
-
   // Clamp the viewing frustum used by the Jacobian to keep it stable near the
   // image border: 15% of the image size beyond each edge. The limits are
   // measured from the principal point, so they are asymmetric when cx != W/2
   // (cropped or off-center intrinsics); for a centered principal point they
   // equal the symmetric 1.3 x half-FOV clamp of 3DGS.
   const double w = static_cast<double>(width), h = static_cast<double>(height);
-  const auto txc = tx.clamp(-(camera.cx + 0.15 * w) / camera.fx,
-                            (w - camera.cx + 0.15 * w) / camera.fx);
-  const auto tyc = ty.clamp(-(camera.cy + 0.15 * h) / camera.fy,
-                            (h - camera.cy + 0.15 * h) / camera.fy);
-  const auto zeros = at::zeros_like(safe_z);
-  const auto jacobian = at::stack(
-      {at::stack({camera.fx / safe_z, zeros, -camera.fx * txc / safe_z}, 1),
-       at::stack({zeros, camera.fy / safe_z, -camera.fy * tyc / safe_z}, 1)},
-      1); // [N, 2, 3]
-  const auto basis =
-      quaternion_matrices(rotations) * scales.unsqueeze(1); // R * diag(s)
-  const auto projected = at::matmul(at::matmul(jacobian, rotation), basis);
-  // cov2d = M M^T for the 2x3 matrix M with rows m1, m2. Its determinant is
-  // computed with the Lagrange identity |m1|^2 |m2|^2 - (m1.m2)^2 =
-  // |m1 x m2|^2: a sum of squares, instead of a*c - b*b, which cancels
-  // catastrophically in float32 for long thin (needle) splats.
-  const auto m1 = projected.select(1, 0), m2 = projected.select(1, 1);
-  const auto cov_a = (m1 * m1).sum(1);
-  const auto b = (m1 * m2).sum(1);
-  const auto cov_c = (m2 * m2).sum(1);
-  const auto a = cov_a + kLowPass;
-  const auto c = cov_c + kLowPass;
-  const auto det = at::linalg_cross(m1, m2, 1).square().sum(1) +
-                   kLowPass * (cov_a + cov_c) + kLowPass * kLowPass;
-  const auto inverse_det = 1.0 / det.clamp_min(1e-12);
-  const auto conic_a = c * inverse_det;
-  const auto conic_b = -b * inverse_det;
-  const auto conic_c = a * inverse_det;
+  const double tx_lo = -(camera.cx + 0.15 * w) / camera.fx;
+  const double tx_hi = (w - camera.cx + 0.15 * w) / camera.fx;
+  const double ty_lo = -(camera.cy + 0.15 * h) / camera.fy;
+  const double ty_hi = (h - camera.cy + 0.15 * h) / camera.fy;
+  at::Tensor z, x2, y2, means2d, a, b, c, det, conic_a, conic_b, conic_c;
+#ifdef USE_CUDA
+  // Fused projection (one kernel each way) unless the camera pose itself is being optimized.
+  const bool fused_projection = use_cuda_raster && detail::cuda_fused_projection() &&
+                                !world_to_camera.requires_grad();
+#else
+  const bool fused_projection = false;
+#endif
+  if (fused_projection) {
+#ifdef USE_CUDA
+    const auto proj = FusedProjectFunction::apply(
+        positions, rotations, scales, world_to_camera.slice(0, 0, 3),
+        std::vector<double>{camera.fx, camera.fy, camera.cx, camera.cy,
+                            static_cast<double>(camera.near_plane), tx_lo, tx_hi, ty_lo,
+                            ty_hi});
+    x2 = proj.select(1, 0);
+    y2 = proj.select(1, 1);
+    means2d = proj.slice(1, 0, 2);
+    if (means2d.requires_grad())
+      means2d.retain_grad();
+    conic_a = proj.select(1, 2);
+    conic_b = proj.select(1, 3);
+    conic_c = proj.select(1, 4);
+    z = proj.select(1, 5);
+    a = proj.select(1, 6);
+    b = proj.select(1, 7);
+    c = proj.select(1, 8);
+    det = proj.select(1, 9);
+#endif
+  } else {
+    const auto camera_points =
+        at::matmul(positions, rotation.transpose(0, 1)) + translation;
+    z = camera_points.select(1, 2);
+    const auto safe_z = z.clamp_min(static_cast<double>(camera.near_plane));
+    const auto tx = camera_points.select(1, 0) / safe_z;
+    const auto ty = camera_points.select(1, 1) / safe_z;
+    x2 = camera.fx * tx + camera.cx;
+    y2 = camera.fy * ty + camera.cy;
+    means2d = at::stack({x2, y2}, 1);
+    if (means2d.requires_grad())
+      means2d.retain_grad();
+
+    const auto txc = tx.clamp(tx_lo, tx_hi);
+    const auto tyc = ty.clamp(ty_lo, ty_hi);
+    const auto zeros = at::zeros_like(safe_z);
+    const auto jacobian = at::stack(
+        {at::stack({camera.fx / safe_z, zeros, -camera.fx * txc / safe_z}, 1),
+         at::stack({zeros, camera.fy / safe_z, -camera.fy * tyc / safe_z}, 1)},
+        1); // [N, 2, 3]
+    const auto basis =
+        quaternion_matrices(rotations) * scales.unsqueeze(1); // R * diag(s)
+    const auto projected = at::matmul(at::matmul(jacobian, rotation), basis);
+    // cov2d = M M^T for the 2x3 matrix M with rows m1, m2. Its determinant is
+    // computed with the Lagrange identity |m1|^2 |m2|^2 - (m1.m2)^2 =
+    // |m1 x m2|^2: a sum of squares, instead of a*c - b*b, which cancels
+    // catastrophically in float32 for long thin (needle) splats.
+    const auto m1 = projected.select(1, 0), m2 = projected.select(1, 1);
+    const auto cov_a = (m1 * m1).sum(1);
+    b = (m1 * m2).sum(1);
+    const auto cov_c = (m2 * m2).sum(1);
+    a = cov_a + kLowPass;
+    c = cov_c + kLowPass;
+    det = at::linalg_cross(m1, m2, 1).square().sum(1) +
+          kLowPass * (cov_a + cov_c) + kLowPass * kLowPass;
+    const auto inverse_det = 1.0 / det.clamp_min(1e-12);
+    conic_a = c * inverse_det;
+    conic_b = -b * inverse_det;
+    conic_c = a * inverse_det;
+  }
 
   at::Tensor radii_long, visible, order_ids, bounds;
   {
