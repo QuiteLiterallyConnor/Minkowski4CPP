@@ -6,6 +6,9 @@
 #include "utils/test_framework.hpp"
 
 #ifdef USE_CUDA
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
+
 using namespace minkowski::gaussian;
 namespace gd = minkowski::gaussian::detail;
 namespace {
@@ -77,6 +80,35 @@ TEST(gaussian_fused_gather_finite_difference) {
       CHECK_NEAR((plus - minus) / (2 * eps), grads[j].reshape({-1})[i].item<double>(), 0.0);
     }
   }
+}
+
+TEST(gaussian_fused_gather_current_stream_and_temporaries) {
+  require_cuda();
+  const auto stream = c10::cuda::getStreamFromPool();
+  const c10::cuda::CUDAStreamGuard guard(stream);
+  const auto f = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
+  const int64_t n = 2049;
+  std::vector<at::Tensor> v{
+      torch::arange(n * 4, f).view({4, n}).transpose(0, 1).slice(1, 0, 4, 2),
+      torch::arange(n * 20, f).view({n, 20}).slice(1, 0, 20, 2),
+      torch::arange(n * 2, f).view({n, 2}).slice(1, 0, 1),
+      torch::arange(n * 3, f).view({3, n}).transpose(0, 1)};
+  for (auto &t : v) t.requires_grad_(true);
+  const auto ids = torch::arange(n, f.dtype(torch::kLong)).flip({0}).slice(0, 0, n - 7);
+  const auto a = fused(v, ids);
+  // The contiguous input temporaries have been released, but their queued reads
+  // must precede allocator reuse on this nondefault stream.
+  for (int i = 0; i < 4; ++i) {
+    auto scratch = torch::empty({n, 20}, f);
+    scratch.fill_(i + 1);
+  }
+  const auto b = reference(v, ids);
+  const auto weight = torch::arange(10 * ids.numel(), f).view({10, ids.numel()}).transpose(0, 1);
+  const auto ga = torch::autograd::grad({a}, v, {weight});
+  const auto gb = torch::autograd::grad({b}, v, {weight});
+  stream.synchronize();
+  CHECK(a.cpu().equal(b.cpu()));
+  for (size_t j = 0; j < v.size(); ++j) CHECK(ga[j].cpu().equal(gb[j].cpu()));
 }
 
 TEST(gaussian_fused_gather_rejects_invalid_metadata) {
