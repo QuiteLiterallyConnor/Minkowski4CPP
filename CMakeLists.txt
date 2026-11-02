@@ -168,8 +168,10 @@ file(GLOB MINK_CPU_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/adaptive/*.cpp"
 )
 
-list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*test.*")
-list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX ".*example.*")
+# Match the file name only: the globbed paths are absolute, so a checkout under
+# e.g. ~/latest/ or C:/tests/ must not drop every library source.
+list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX "/[^/]*test[^/]*$")
+list(FILTER MINK_CPU_SOURCES EXCLUDE REGEX "/[^/]*example[^/]*$")
 
 if(MINKOWSKI_ENABLE_GAUSSIAN)
     file(GLOB MINK_GAUSSIAN_CPU_SOURCES CONFIGURE_DEPENDS
@@ -216,8 +218,8 @@ if(NOT CPU_ONLY)
         "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/training/*.cu"
     )
 
-    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*test.*")
-    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX ".*example.*")
+    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX "/[^/]*test[^/]*$")
+    list(FILTER MINK_GPU_SOURCES EXCLUDE REGEX "/[^/]*example[^/]*$")
 
     if(MINKOWSKI_ENABLE_GAUSSIAN)
         file(GLOB MINK_GAUSSIAN_GPU_SOURCES CONFIGURE_DEPENDS
