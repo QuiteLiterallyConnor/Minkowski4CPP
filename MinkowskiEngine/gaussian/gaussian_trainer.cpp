@@ -49,19 +49,49 @@ at::Tensor ssim(const at::Tensor &prediction, const at::Tensor &target,
       at::arange(window, options) - static_cast<double>(window / 2);
   auto kernel = at::exp(-(coordinates * coordinates) / (2.0 * sigma * sigma));
   kernel = kernel / kernel.sum();
-  const auto window2d = kernel.unsqueeze(1) * kernel.unsqueeze(0);
-  const auto weight = window2d.expand({3, 1, window, window}).contiguous();
 
   const auto x = prediction.permute({2, 0, 1}).unsqueeze(0);
   const auto y = target.permute({2, 0, 1}).unsqueeze(0);
-  auto filter = [&](const at::Tensor &t) {
-    return at::conv2d(t, weight, {}, 1, window / 2, 1, 3);
-  };
-  const auto mu_x = filter(x), mu_y = filter(y);
+  at::Tensor mu_x, mu_y, e_xx, e_yy, e_xy; // [1, 3, H, W] local moments
+  if (prediction.is_cuda()) {
+    // cuDNN's dense depthwise window x window filter is already fast (and
+    // faster than the separable form below on CUDA): unchanged.
+    const auto window2d = kernel.unsqueeze(1) * kernel.unsqueeze(0);
+    const auto weight = window2d.expand({3, 1, window, window}).contiguous();
+    auto filter = [&](const at::Tensor &t) {
+      return at::conv2d(t, weight, {}, 1, window / 2, 1, 3);
+    };
+    mu_x = filter(x);
+    mu_y = filter(y);
+    e_xx = filter(x * x);
+    e_yy = filter(y * y);
+    e_xy = filter(x * y);
+  } else {
+    // CPU: the window is the outer product of the 1-D kernel and zero padding
+    // separates too, so a vertical then a horizontal 1-D depthwise pass equals
+    // the dense filter with 2 * window instead of window^2 taps per pixel.
+    // The five moments of the three channels are filtered as one batch of 15
+    // planes (2 convolutions instead of 5, forward and backward).
+    const auto planes = at::cat({x, y, x * x, y * y, x * y}, 1);
+    const auto vertical =
+        kernel.view({1, 1, window, 1}).expand({15, 1, window, 1}).contiguous();
+    const auto horizontal =
+        kernel.view({1, 1, 1, window}).expand({15, 1, 1, window}).contiguous();
+    const auto filtered = at::conv2d(
+        at::conv2d(planes, vertical, {}, 1, at::IntArrayRef{window / 2, 0}, 1,
+                   15),
+        horizontal, {}, 1, at::IntArrayRef{0, window / 2}, 1, 15);
+    const auto m = filtered.split(3, 1);
+    mu_x = m[0];
+    mu_y = m[1];
+    e_xx = m[2];
+    e_yy = m[3];
+    e_xy = m[4];
+  }
   const auto mu_xx = mu_x * mu_x, mu_yy = mu_y * mu_y, mu_xy = mu_x * mu_y;
-  const auto sigma_xx = filter(x * x) - mu_xx;
-  const auto sigma_yy = filter(y * y) - mu_yy;
-  const auto sigma_xy = filter(x * y) - mu_xy;
+  const auto sigma_xx = e_xx - mu_xx;
+  const auto sigma_yy = e_yy - mu_yy;
+  const auto sigma_xy = e_xy - mu_xy;
   constexpr double c1 = 0.01 * 0.01, c2 = 0.03 * 0.03;
   const auto map = ((2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)) /
                    ((mu_xx + mu_yy + c1) * (sigma_xx + sigma_yy + c2));
