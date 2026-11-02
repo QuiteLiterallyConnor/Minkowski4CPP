@@ -479,6 +479,7 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         tests/adaptive/test_parallel_kmap.cpp
         tests/adaptive/test_drop_empty.cpp
         tests/adaptive/test_interp_fallback.cpp
+        tests/adaptive/test_continuous_interp.cpp
         tests/adaptive/test_coverage.cpp
     )
 
@@ -488,6 +489,10 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
 
     add_executable(adaptive_kmap_bench
         tests/adaptive/bench_adaptive_kmap.cpp
+    )
+
+    add_executable(adaptive_interp_eval
+        tests/adaptive/bench_adaptive_interp.cpp
     )
 
     add_executable(sphere
@@ -503,7 +508,7 @@ if(MINK_BUILD_ADAPTIVE_TESTS)
         MINK_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
     )
 
-    foreach(tgt adaptive_tests adaptive_bench adaptive_kmap_bench sphere adaptive_vs_uniform_bench)
+    foreach(tgt adaptive_tests adaptive_bench adaptive_kmap_bench adaptive_interp_eval sphere adaptive_vs_uniform_bench)
         target_link_libraries(${tgt} PRIVATE minkowski_cpp)
         target_include_directories(${tgt} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"

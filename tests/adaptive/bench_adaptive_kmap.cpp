@@ -9,7 +9,8 @@
 // Prints "key   value" lines; times are median / min / max over --reps after --warmup runs.
 //  kmap_<mode>_cold_ms : first map build on a freshly created topology (lazy indices included)
 //  kmap_<mode>_warm_ms : map build on a topology whose lazy indices already exist
-//  interp_multilinear_ms / interp_nearest_ms : interpolate() at --interp random points
+//  interp_multilinear_ms / interp_nearest_ms / interp_continuous_ms : interpolate() at --interp
+//    random points (continuous = InterpMode::ContinuousMultilinear)
 //  interp_<mode>_{zero,ancestor}_il_ms : the same queries with InterpFallback::Zero and
 //    ::CoarserAncestor, timed interleaved (alternating order every repetition)
 // --drop-empty 1 refines with drop_empty (uncovered space inside occupied level-0 cells).
@@ -300,6 +301,8 @@ int main(int argc, char** argv) {
         report("interp_multilinear", a, [] {},
                [&] { interpolate(t, q, InterpMode::Multilinear); });
         report("interp_nearest", a, [] {}, [&] { interpolate(t, q, InterpMode::Nearest); });
+        report("interp_continuous", a, [] {},
+               [&] { interpolate(t, q, InterpMode::ContinuousMultilinear); });
 #ifdef MINK_ADAPTIVE_HAS_INTERP_FALLBACK
         {
             auto ones = t.with_features(torch::ones({t.size(), 1}, torch::kFloat64));
