@@ -30,6 +30,10 @@
 //  kmap_batch_later_epochs_ms: per batch, epochs 2..E
 //  part_hits / part_misses / part_store_mb : KernelMapCache part reuse counters at the end
 // --part-reuse-mb M sets KernelMapCache::set_part_reuse_bytes (0 = off, the default).
+// --batch-device cuda moves every batch to the GPU first; each timed map is then what a CUDA
+// convolution needs: get_or_build without host arrays plus the map's device index arrays (and
+// float32 weights for weighted modes), synchronized. --device-compose 0|1 sets
+// detail::cuda_part_compose (1 = compose part-reuse maps on the device, the default).
 // Always: peak_working_set_mb (process peak, Windows) at exit.
 #include <algorithm>
 #include <chrono>
@@ -81,6 +85,8 @@ struct Args {
     int64_t samples = 64;
     int epochs = 3;
     double part_reuse_mb = 0.0;
+    std::string batch_device = "cpu";
+    int device_compose = 1;
 };
 
 Args parse(int argc, char** argv) {
@@ -106,6 +112,8 @@ Args parse(int argc, char** argv) {
         else if (k == "--samples") a.samples = std::atoll(v.c_str());
         else if (k == "--epochs") a.epochs = std::atoi(v.c_str());
         else if (k == "--part-reuse-mb") a.part_reuse_mb = std::atof(v.c_str());
+        else if (k == "--batch-device") a.batch_device = v;
+        else if (k == "--device-compose") a.device_compose = std::atoi(v.c_str());
         else {
             std::cerr << "unknown argument " << k << "\n";
             std::exit(2);
@@ -255,6 +263,16 @@ void print_peak_ws() {
 }
 
 int run_batches(const Args& a) {
+    const torch::Device dev = a.batch_device == "cuda" ? torch::Device(torch::kCUDA) : torch::Device(torch::kCPU);
+    if (dev.is_cuda() && !torch::cuda::is_available()) {
+        std::cerr << "CUDA not available\n";
+        return 3;
+    }
+#ifdef USE_CUDA
+    minkowski::adaptive::detail::cuda_part_compose() = a.device_compose != 0;
+#endif
+    print("batch_device_cuda", dev.is_cuda() ? 1.0 : 0.0);
+    print("device_compose", static_cast<double>(a.device_compose));
     AdaptiveVoxelConfig cfg;
     cfg.base_voxel_size = {1.0, 1.0, 1.0};
     cfg.max_depth = a.depth;
@@ -306,14 +324,23 @@ int run_batches(const Args& a) {
                 torch::cat(cs, 0), torch::cat(ls, 0),
                 torch::ones({torch::cat(ls, 0).size(0), 1}, torch::kFloat64), cfg);
             // The batch and its pooled versions (untimed), like a small encoder.
+            if (dev.is_cuda()) x = x.to(dev);
             std::vector<AdaptiveSparseTensor> stages{x};
             for (int64_t l = static_cast<int64_t>(a.depth) - 1; l >= 0; --l)
                 stages.push_back(adaptive_pool(stages.back(), static_cast<uint32_t>(l), Reduction::Mean));
             const auto t0 = Clock::now();
             for (const auto& st : stages) {
+                if (dev.is_cuda()) {
+                    const auto entry = cache.get_or_build(st, kc, /*host_arrays=*/false);
+                    entry.device->get(entry.map, dev, torch::kFloat32,
+                                      kc.mode != AdaptiveConvMode::CenterSampled);
+                    if (e == 0 && b0 == 0) pairs += static_cast<double>(entry.map.kernel_offsets.back());
+                    continue;
+                }
                 const auto m = build_adaptive_kernel_map(st, kc);
                 if (e == 0 && b0 == 0) pairs += static_cast<double>(m.in_index.numel());
             }
+            sync(dev);
             (e == 0 ? first : later).push_back(ms_since(t0));
         }
     }
