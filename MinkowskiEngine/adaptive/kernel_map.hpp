@@ -40,6 +40,19 @@ struct AdaptiveKernelMap {
   int64_t num_kernels = 0;
 };
 
+// Row blocks of at most `rows` pairs over each kernel slot's pair range, for the fused CUDA
+// apply_map. `slots` (int64) holds the map's num_kernels + 1 kernel offsets followed by
+// num_kernels + 1 prefix counts of blocks per slot: block t lies in the slot k with
+// prefix[k] <= t < prefix[k + 1] and starts at offsets[k] + (t - prefix[k]) * rows. `blocks`
+// ([count, 3] int64: begin, end, slot) lists them; on CUDA it is expanded from `slots` on the
+// device, so a new map uploads 2 (num_kernels + 1) values instead of the whole table.
+struct TileTable {
+  at::Tensor slots;
+  at::Tensor blocks;
+  int64_t count = 0;
+  int64_t rows = 0;
+};
+
 // Copies of one kernel map's index/weight tensors on the devices and dtypes it was applied
 // with, so repeated convolutions upload them once. Shared by every copy of a cache entry and
 // freed with it (KernelMapCache::clear() or eviction releases the device memory).
@@ -53,17 +66,16 @@ public:
   // in/out indices on `device`, and the weights as `dtype` if `with_weight`.
   Arrays get(const AdaptiveKernelMap &map, const at::Device &device, at::ScalarType dtype,
              bool with_weight);
-  // [T, 3] int64 (begin, end, slot) table cutting every slot's pair range into blocks of at
-  // most `rows` pairs, on `device`; built once per device and row count (used by the fused
-  // CUDA apply_map).
-  at::Tensor tiles(const AdaptiveKernelMap &map, const at::Device &device, int64_t rows);
+  // The map's TileTable for `rows` pairs per block on `device` (built once per device and row
+  // count; 2 (num_kernels + 1) values, so cheap to build for every new map).
+  TileTable tiles(const AdaptiveKernelMap &map, const at::Device &device, int64_t rows);
 
 private:
   struct Slot {
     at::Device device{at::kCPU};
     at::Tensor in_index, out_index;
     std::vector<std::pair<at::ScalarType, at::Tensor>> weights;
-    std::vector<std::pair<int64_t, at::Tensor>> tiles;
+    std::vector<TileTable> tiles;
   };
   Slot &slot_for(const AdaptiveKernelMap &map, const at::Device &device); // mutex_ held
   std::mutex mutex_;

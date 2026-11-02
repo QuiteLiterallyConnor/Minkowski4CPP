@@ -2,10 +2,13 @@
 #define MINK_CPP_ADAPTIVE_FUSED_APPLY_HPP
 
 // Single-launch CUDA kernels for applying an adaptive kernel map (fused_apply_cuda.cu).
-// The map's pairs are sorted by kernel slot; a "tile table" ([T, 3] int64 on the device:
-// begin, end, slot) cuts every slot's pair range into row blocks, so one launch covers all
-// slots with no gathered or product temporaries (KernelMapDeviceCache::tiles).
+// The map's pairs are sorted by kernel slot; a TileTable (KernelMapDeviceCache::tiles) cuts
+// every slot's pair range into row blocks; their (begin, end, slot) table is found by a binary search
+// over the slot offsets once (cuda_expand_tiles), so one launch covers all slots with no gathered
+// or product temporaries.
 #ifdef USE_CUDA
+
+#include "kernel_map.hpp"
 
 #include <torch/torch.h>
 
@@ -14,6 +17,10 @@
 namespace minkowski {
 namespace adaptive {
 namespace detail {
+
+// [count, 3] (begin, end, slot) block table expanded on the device from a TileTable's `slots`.
+at::Tensor cuda_expand_tiles(const at::Tensor &slots, int64_t num_kernels, int64_t count,
+                             int64_t rows);
 
 // Tile edge for these channel counts (8, 16 or 32; symmetric in cin/cout). 8 and 16 use
 // BS x BS thread blocks; 32 selects the register-blocked 64 x 64 kernels.
@@ -27,13 +34,13 @@ int fused_tile_rows(int64_t cin, int64_t cout);
 // use fused_tile_rows(cin, cout) rows per tile.
 void cuda_fused_gather_gemm_scatter(const at::Tensor &x, const at::Tensor &w,
                                     const at::Tensor &from, const at::Tensor &to,
-                                    const at::Tensor &pw, const at::Tensor &tiles, bool trans_w,
+                                    const at::Tensor &pw, const TileTable &tiles, bool trans_w,
                                     at::Tensor &y);
 
 // gw[k] += sum over the pairs p of slot k of pw[p] * x[from[p]]^T gy[to[p]] (gw [K, cin, cout]).
-// `chunks` is a tile table with any number of rows per tile (each tile is one atomic partial).
+// `chunks` may use any number of rows per block (each block is one atomic partial).
 void cuda_fused_weight_grad(const at::Tensor &x, const at::Tensor &gy, const at::Tensor &from,
-                            const at::Tensor &to, const at::Tensor &pw, const at::Tensor &chunks,
+                            const at::Tensor &to, const at::Tensor &pw, const TileTable &chunks,
                             at::Tensor &gw);
 
 } // namespace detail

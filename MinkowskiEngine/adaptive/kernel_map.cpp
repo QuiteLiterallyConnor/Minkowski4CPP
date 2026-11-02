@@ -1,4 +1,7 @@
 #include "kernel_map.hpp"
+#ifdef USE_CUDA
+#include "fused_apply.hpp"
+#endif
 #include "adaptive_topology.hpp"
 
 #include <algorithm>
@@ -220,24 +223,38 @@ KernelMapDeviceCache::Slot &KernelMapDeviceCache::slot_for(const AdaptiveKernelM
   return slots_.back();
 }
 
-at::Tensor KernelMapDeviceCache::tiles(const AdaptiveKernelMap &map, const at::Device &device,
-                                       int64_t rows) {
+TileTable KernelMapDeviceCache::tiles(const AdaptiveKernelMap &map, const at::Device &device,
+                                      int64_t rows) {
   std::lock_guard<std::mutex> lock(mutex_);
   Slot &slot = slot_for(map, device);
   for (const auto &t : slot.tiles)
-    if (t.first == rows)
-      return t.second;
-  std::vector<int64_t> table;
+    if (t.rows == rows)
+      return t;
   const auto &off = map.kernel_offsets;
+  std::vector<int64_t> table(off.begin(), off.end());
+  table.push_back(0);
   for (size_t k = 0; k + 1 < off.size(); ++k)
-    for (int64_t b = off[k]; b < off[k + 1]; b += rows) {
-      table.push_back(b);
-      table.push_back(std::min(b + rows, off[k + 1]));
-      table.push_back(static_cast<int64_t>(k));
-    }
-  const int64_t n = static_cast<int64_t>(table.size()) / 3;
-  auto t = torch::from_blob(table.data(), {n, 3}, torch::kInt64).clone().to(device);
-  slot.tiles.emplace_back(rows, t);
+    table.push_back(table.back() + (off[k + 1] - off[k] + rows - 1) / rows);
+  TileTable t;
+  t.rows = rows;
+  t.count = table.back();
+  t.slots = torch::tensor(table, torch::kInt64).to(device);
+#ifdef USE_CUDA
+  if (device.is_cuda())
+    t.blocks = detail::cuda_expand_tiles(t.slots, map.num_kernels, t.count, rows);
+#endif
+  if (!t.blocks.defined()) {
+    std::vector<int64_t> blocks;
+    blocks.reserve(static_cast<size_t>(3 * t.count));
+    for (size_t k = 0; k + 1 < off.size(); ++k)
+      for (int64_t b = off[k]; b < off[k + 1]; b += rows) {
+        blocks.push_back(b);
+        blocks.push_back(std::min(b + rows, off[k + 1]));
+        blocks.push_back(static_cast<int64_t>(k));
+      }
+    t.blocks = torch::tensor(blocks, torch::kInt64).view({t.count, 3}).to(device);
+  }
+  slot.tiles.push_back(t);
   return t;
 }
 

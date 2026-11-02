@@ -334,7 +334,7 @@ TEST(fused_apply_cuda_more_tiles_than_one_grid_row) {
     KernelMapCache::instance().clear();
     auto entry = KernelMapCache::instance().get_or_build(t, kc);
     auto tiles = entry.device->tiles(entry.map, torch::Device(torch::kCUDA), 8);
-    CHECK(tiles.size(0) > 65535);
+    CHECK(tiles.count > 65535);
     auto w = torch::randn({27, 3, 5}, torch::kFloat64).to(torch::kCUDA);
     Result a, b;
     {
@@ -351,33 +351,54 @@ TEST(fused_apply_cuda_more_tiles_than_one_grid_row) {
     KernelMapCache::instance().clear();
 }
 
-TEST(fused_apply_tile_table_covers_each_slot_once) {
+TEST(fused_apply_tile_table_counts_blocks_per_slot) {
     auto t = mixed_tensor(2, torch::kFloat64);
     AdaptiveKernelConfig kc;
     kc.mode = AdaptiveConvMode::OverlapWeighted;
     KernelMapCache::instance().clear();
     auto e = KernelMapCache::instance().get_or_build(t, kc);
     const auto& off = e.map.kernel_offsets;
+    const int64_t nk = e.map.num_kernels;
     for (int64_t rows : {int64_t(1), int64_t(8), int64_t(256), int64_t(1) << 40}) {
-        auto tiles = e.device->tiles(e.map, torch::kCPU, rows);
-        CHECK(tiles.data_ptr() == e.device->tiles(e.map, torch::kCPU, rows).data_ptr());
-        auto acc = tiles.accessor<int64_t, 2>();
-        int64_t next = 0, prev_k = -1;
-        for (int64_t i = 0; i < tiles.size(0); ++i) {
-            const int64_t b = acc[i][0], en = acc[i][1], k = acc[i][2];
-            CHECK(k >= prev_k);
-            if (k != prev_k) {
-                CHECK_EQ(b, off[k]);  // empty slots have no tiles
-                next = b;
-            }
-            CHECK_EQ(b, next);
-            CHECK(en > b && en - b <= rows && en <= off[k + 1]);
-            next = en;
-            prev_k = k;
+        auto tt = e.device->tiles(e.map, torch::kCPU, rows);
+        CHECK(tt.slots.data_ptr() == e.device->tiles(e.map, torch::kCPU, rows).slots.data_ptr());
+        CHECK_EQ(tt.rows, rows);
+        CHECK_EQ(tt.slots.numel(), 2 * (nk + 1));
+        auto v = tt.slots.accessor<int64_t, 1>();
+        int64_t blocks = 0;
+        for (int64_t k = 0; k <= nk; ++k) {
+            CHECK_EQ(v[k], off[k]);
+            CHECK_EQ(v[nk + 1 + k], blocks);
+            if (k < nk) blocks += (off[k + 1] - off[k] + rows - 1) / rows;
         }
+        CHECK_EQ(tt.count, blocks);
+        // Every pair lies in exactly one block: block t covers [off[k] + (t - pre[k]) rows, ...).
         int64_t covered = 0;
-        for (int64_t i = 0; i < tiles.size(0); ++i) covered += acc[i][1] - acc[i][0];
+        for (int64_t k = 0; k < nk; ++k)
+            for (int64_t b = v[nk + 1 + k]; b < v[nk + 2 + k]; ++b) {
+                const int64_t begin = off[k] + (b - v[nk + 1 + k]) * rows;
+                const int64_t end = std::min(begin + rows, off[k + 1]);
+                CHECK(end > begin);
+                covered += end - begin;
+            }
         CHECK_EQ(covered, off.back());
+        // The (begin, end, slot) blocks: built on the host for the CPU, expanded on the device
+        // for CUDA; both must list exactly these blocks in order.
+        std::vector<torch::Device> devs = {torch::kCPU};
+        if (torch::cuda::is_available()) devs.push_back(torch::kCUDA);
+        for (const auto& dev : devs) {
+            auto blocks = e.device->tiles(e.map, dev, rows).blocks.cpu();
+            CHECK_EQ(blocks.size(0), tt.count);
+            auto bl = blocks.accessor<int64_t, 2>();
+            int64_t i = 0;
+            for (int64_t k = 0; k < nk; ++k)
+                for (int64_t b = off[k]; b < off[k + 1]; b += rows, ++i) {
+                    CHECK_EQ(bl[i][0], b);
+                    CHECK_EQ(bl[i][1], std::min(b + rows, off[k + 1]));
+                    CHECK_EQ(bl[i][2], k);
+                }
+            CHECK_EQ(i, tt.count);
+        }
     }
     KernelMapCache::instance().clear();
 }

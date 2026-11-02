@@ -34,21 +34,25 @@ constexpr int64_t kFusedChunkRows = 256;
 struct FusedApplyMap : public torch::autograd::Function<FusedApplyMap> {
   static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &x,
                             const at::Tensor &w, const at::Tensor &from, const at::Tensor &to,
-                            const at::Tensor &pw, const at::Tensor &tiles,
-                            const at::Tensor &chunks, int64_t n_out,
+                            const at::Tensor &pw, const TileTable &tiles,
+                            const TileTable &chunks, int64_t n_out,
                             const std::vector<int64_t> &offsets) {
     auto y = torch::zeros({n_out, w.size(2)}, x.options());
     detail::cuda_fused_gather_gemm_scatter(x, w, from, to, pw, tiles, /*trans_w=*/false, y);
-    ctx->save_for_backward({x, w, from, to, pw, tiles, chunks});
+    ctx->save_for_backward({x, w, from, to, pw, tiles.blocks, chunks.blocks});
     ctx->saved_data["offsets"] = offsets;
+    ctx->saved_data["tiles"] = std::vector<int64_t>{tiles.count, tiles.rows};
+    ctx->saved_data["chunks"] = std::vector<int64_t>{chunks.count, chunks.rows};
     return y;
   }
 
   static torch::autograd::variable_list backward(torch::autograd::AutogradContext *ctx,
                                                  torch::autograd::variable_list grads) {
     const auto s = ctx->get_saved_variables();
-    const at::Tensor &x = s[0], &w = s[1], &from = s[2], &to = s[3], &pw = s[4], &tiles = s[5],
-                     &chunks = s[6];
+    const at::Tensor &x = s[0], &w = s[1], &from = s[2], &to = s[3], &pw = s[4];
+    const auto tn = ctx->saved_data["tiles"].toIntVector();
+    const auto cn = ctx->saved_data["chunks"].toIntVector();
+    const TileTable tiles{at::Tensor(), s[5], tn[0], tn[1]}, chunks{at::Tensor(), s[6], cn[0], cn[1]};
     if (!grads[0].defined())
       return {torch::zeros_like(x), torch::zeros_like(w), {}, {}, {}, {}, {}, {}, {}};
     const at::Tensor gy = grads[0].contiguous();

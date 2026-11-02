@@ -1,6 +1,6 @@
 // Fused gather-GEMM-scatter kernels for the CUDA adaptive apply_map (see fused_apply.hpp).
 // Same tile structure as the engine's per-offset `matmul` kernels (convolution_kernel.cu),
-// but one launch covers every kernel slot: blockIdx.x walks a tile table of (begin, end, slot)
+// but one launch covers every kernel slot: blockIdx.x walks a TileTable's (begin, end, slot)
 // row blocks, indices are int64, rows may carry a per-pair weight, and results are
 // atomically added (so the summation order, not the math, is nondeterministic).
 #include "fused_apply.hpp"
@@ -16,6 +16,27 @@ namespace minkowski {
 namespace adaptive {
 namespace detail {
 namespace {
+
+// TileTable blocks from its slot offsets and block-count prefixes (one thread per block).
+__global__ void expand_tiles(const int64_t *__restrict__ slots, int nk, int64_t count,
+                             int64_t rows, int64_t *__restrict__ blocks) {
+  const int64_t t = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+  if (t >= count)
+    return;
+  const int64_t *off = slots, *pre = slots + nk + 1;
+  int lo = 0, hi = nk - 1; // largest k with pre[k] <= t (empty slots repeat a prefix)
+  while (lo < hi) {
+    const int mid = (lo + hi + 1) / 2;
+    if (pre[mid] <= t)
+      lo = mid;
+    else
+      hi = mid - 1;
+  }
+  const int64_t begin = off[lo] + (t - pre[lo]) * rows;
+  blocks[3 * t] = begin;
+  blocks[3 * t + 1] = min(begin + rows, off[lo + 1]);
+  blocks[3 * t + 2] = lo;
+}
 
 // One block = BS pairs (rows) x BS output channels. A row of x is scaled by its pair weight
 // on load, multiplied with W[k] in BS-wide chunks of the input channels, and the BS x BS
@@ -263,26 +284,26 @@ const T *maybe(const at::Tensor &t) {
 
 template <typename T, int BS>
 void launch_forward(const at::Tensor &x, const at::Tensor &w, const at::Tensor &from,
-                    const at::Tensor &to, const at::Tensor &pw, const at::Tensor &tiles,
+                    const at::Tensor &to, const at::Tensor &pw, const TileTable &tiles,
                     bool trans_w, at::Tensor &y, int cin, int cout) {
   const dim3 block(BS, BS);
-  const dim3 grid(static_cast<unsigned>(tiles.size(0)), static_cast<unsigned>((cout + BS - 1) / BS));
+  const dim3 grid(static_cast<unsigned>(tiles.count), static_cast<unsigned>((cout + BS - 1) / BS));
   gather_gemm_scatter<T, BS><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
       x.data_ptr<T>(), w.data_ptr<T>(), from.data_ptr<int64_t>(), to.data_ptr<int64_t>(),
-      maybe<T>(pw), tiles.data_ptr<int64_t>(), cin, cout, trans_w, y.data_ptr<T>());
+      maybe<T>(pw), tiles.blocks.data_ptr<int64_t>(), cin, cout, trans_w, y.data_ptr<T>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 template <typename T, int BS>
 void launch_weight_grad(const at::Tensor &x, const at::Tensor &gy, const at::Tensor &from,
-                        const at::Tensor &to, const at::Tensor &pw, const at::Tensor &chunks,
+                        const at::Tensor &to, const at::Tensor &pw, const TileTable &chunks,
                         at::Tensor &gw, int cin, int cout) {
   const dim3 block(BS, BS);
-  const dim3 grid(static_cast<unsigned>(chunks.size(0)), static_cast<unsigned>((cin + BS - 1) / BS),
+  const dim3 grid(static_cast<unsigned>(chunks.count), static_cast<unsigned>((cin + BS - 1) / BS),
                   static_cast<unsigned>((cout + BS - 1) / BS));
   weight_grad<T, BS><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
       x.data_ptr<T>(), gy.data_ptr<T>(), from.data_ptr<int64_t>(), to.data_ptr<int64_t>(),
-      maybe<T>(pw), chunks.data_ptr<int64_t>(), cin, cout, gw.data_ptr<T>());
+      maybe<T>(pw), chunks.blocks.data_ptr<int64_t>(), cin, cout, gw.data_ptr<T>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -291,19 +312,19 @@ inline int rb_threads(int channels) { return channels <= 32 ? 8 : 16; }
 
 template <typename T, int TM, int TN>
 void launch_forward_rb_t(const at::Tensor &x, const at::Tensor &w, const at::Tensor &from,
-                         const at::Tensor &to, const at::Tensor &pw, const at::Tensor &tiles,
+                         const at::Tensor &to, const at::Tensor &pw, const TileTable &tiles,
                          bool trans_w, at::Tensor &y, int cin, int cout) {
-  const dim3 grid(static_cast<unsigned>(tiles.size(0)),
+  const dim3 grid(static_cast<unsigned>(tiles.count),
                   static_cast<unsigned>((cout + 4 * TN - 1) / (4 * TN)));
   gather_gemm_scatter_rb<T, TM, TN><<<grid, TM * TN, 0, at::cuda::getCurrentCUDAStream()>>>(
       x.data_ptr<T>(), w.data_ptr<T>(), from.data_ptr<int64_t>(), to.data_ptr<int64_t>(),
-      maybe<T>(pw), tiles.data_ptr<int64_t>(), cin, cout, trans_w, y.data_ptr<T>());
+      maybe<T>(pw), tiles.blocks.data_ptr<int64_t>(), cin, cout, trans_w, y.data_ptr<T>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 template <typename T>
 void launch_forward_rb(const at::Tensor &x, const at::Tensor &w, const at::Tensor &from,
-                       const at::Tensor &to, const at::Tensor &pw, const at::Tensor &tiles,
+                       const at::Tensor &to, const at::Tensor &pw, const TileTable &tiles,
                        bool trans_w, at::Tensor &y, int cin, int cout) {
   // Rows always 64 (RB_ROWS, the tile table's row count); the output side may be 32 wide.
   if (rb_threads(cout) == 8)
@@ -315,19 +336,19 @@ void launch_forward_rb(const at::Tensor &x, const at::Tensor &w, const at::Tenso
 template <typename T, int TM, int TN>
 void launch_weight_grad_rb_t(const at::Tensor &x, const at::Tensor &gy, const at::Tensor &from,
                              const at::Tensor &to, const at::Tensor &pw,
-                             const at::Tensor &chunks, at::Tensor &gw, int cin, int cout) {
-  const dim3 grid(static_cast<unsigned>(chunks.size(0)),
+                             const TileTable &chunks, at::Tensor &gw, int cin, int cout) {
+  const dim3 grid(static_cast<unsigned>(chunks.count),
                   static_cast<unsigned>((cin + 4 * TM - 1) / (4 * TM)),
                   static_cast<unsigned>((cout + 4 * TN - 1) / (4 * TN)));
   weight_grad_rb<T, TM, TN><<<grid, TM * TN, 0, at::cuda::getCurrentCUDAStream()>>>(
       x.data_ptr<T>(), gy.data_ptr<T>(), from.data_ptr<int64_t>(), to.data_ptr<int64_t>(),
-      maybe<T>(pw), chunks.data_ptr<int64_t>(), cin, cout, gw.data_ptr<T>());
+      maybe<T>(pw), chunks.blocks.data_ptr<int64_t>(), cin, cout, gw.data_ptr<T>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 template <typename T>
 void launch_weight_grad_rb(const at::Tensor &x, const at::Tensor &gy, const at::Tensor &from,
-                           const at::Tensor &to, const at::Tensor &pw, const at::Tensor &chunks,
+                           const at::Tensor &to, const at::Tensor &pw, const TileTable &chunks,
                            at::Tensor &gw, int cin, int cout) {
   const int tm = rb_threads(cin), tn = rb_threads(cout);
   if (tm == 8 && tn == 8)
@@ -350,6 +371,21 @@ void with_tile(int bs, F &&f) {
 
 } // namespace
 
+at::Tensor cuda_expand_tiles(const at::Tensor &slots, int64_t num_kernels, int64_t count,
+                             int64_t rows) {
+  auto blocks = at::empty({count, 3}, slots.options());
+  if (count == 0)
+    return blocks;
+  const c10::cuda::CUDAGuard guard(slots.device());
+  constexpr int threads = 256;
+  expand_tiles<<<static_cast<unsigned>((count + threads - 1) / threads), threads, 0,
+                 at::cuda::getCurrentCUDAStream()>>>(slots.data_ptr<int64_t>(),
+                                                     static_cast<int>(num_kernels), count, rows,
+                                                     blocks.data_ptr<int64_t>());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return blocks;
+}
+
 int fused_tile_rows(int64_t cin, int64_t cout) {
   const int bs = fused_tile(cin, cout);
   return bs == 32 ? RB_ROWS : bs;
@@ -369,12 +405,12 @@ int fused_tile(int64_t cin, int64_t cout) {
 
 void cuda_fused_gather_gemm_scatter(const at::Tensor &x, const at::Tensor &w,
                                     const at::Tensor &from, const at::Tensor &to,
-                                    const at::Tensor &pw, const at::Tensor &tiles, bool trans_w,
+                                    const at::Tensor &pw, const TileTable &tiles, bool trans_w,
                                     at::Tensor &y) {
-  check_args(x, w, from, to, pw, tiles, y);
-  if (tiles.size(0) == 0 || y.size(1) == 0)
+  check_args(x, w, from, to, pw, tiles.blocks, y);
+  if (tiles.count == 0 || y.size(1) == 0)
     return;
-  if (tiles.size(0) > 0x7fffffff)
+  if (tiles.count > 0x7fffffff)
     throw std::invalid_argument("fused apply_map: too many tiles for one launch");
   const c10::cuda::CUDAGuard guard(x.device());
   const int cin = static_cast<int>(x.size(1)), cout = static_cast<int>(y.size(1));
@@ -400,12 +436,12 @@ void cuda_fused_gather_gemm_scatter(const at::Tensor &x, const at::Tensor &w,
 }
 
 void cuda_fused_weight_grad(const at::Tensor &x, const at::Tensor &gy, const at::Tensor &from,
-                            const at::Tensor &to, const at::Tensor &pw, const at::Tensor &chunks,
+                            const at::Tensor &to, const at::Tensor &pw, const TileTable &chunks,
                             at::Tensor &gw) {
-  check_args(x, gy, from, to, pw, chunks, gw);
-  if (chunks.size(0) == 0 || x.size(1) == 0 || gy.size(1) == 0)
+  check_args(x, gy, from, to, pw, chunks.blocks, gw);
+  if (chunks.count == 0 || x.size(1) == 0 || gy.size(1) == 0)
     return;
-  if (chunks.size(0) > 0x7fffffff)
+  if (chunks.count > 0x7fffffff)
     throw std::invalid_argument("fused apply_map: too many chunks for one launch");
   const c10::cuda::CUDAGuard guard(x.device());
   const int cin = static_cast<int>(x.size(1)), cout = static_cast<int>(gy.size(1));

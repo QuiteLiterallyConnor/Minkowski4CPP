@@ -3,7 +3,7 @@
 //                          [--modes center,volume,overlap] [--shift 0] [--interp 20000]
 //                          [--conv none|cpu|cuda] [--cout 16] [--dtype f32|f64]
 //                          [--region 16] [--phases cold,warm] [--drop-empty 0|1] [--group-mb M]
-//                          [--fused 0|1] [--grad-split 0|1]
+//                          [--fused 0|1] [--grad-split 0|1] [--fresh-map 0|1]
 // Workload: half the points uniform in [0,256)^3, half in [0,16)^3; voxelized at level 0 and
 // the region [0,R)^3 refined to `depth`, R = --region (16 = the adaptive_bench workload).
 // --phases picks which kernel-map timings run (cold, warm or both).
@@ -22,6 +22,9 @@
 //  conv_<mode>_cuda_ms    : forward time between CUDA events (cuda only)
 //  conv_<mode>_fwdbwdx_ms / _fwdbwdw_ms : with --grad-split 1, forward + backward with only the
 //                           features / only the weight requiring a gradient
+//  conv_<mode>_fresh_{upload,tiles,fwd}_ms : with --fresh-map 1, the per-new-map costs with a warm
+//                           allocator (map rebuilt untimed before each rep): uploading the index/weight
+//                           arrays, building the fused tile tables, and a forward on a fresh cache entry
 //  cuda_max_alloc_mb / cuda_max_reserved_mb : caching-allocator peaks over the conv runs
 // Always: peak_working_set_mb (process peak, Windows) at exit.
 #include <algorithm>
@@ -35,6 +38,9 @@
 #include <vector>
 
 #include "MinkowskiEngine/adaptive/adaptive.hpp"
+#ifdef USE_CUDA
+#include "MinkowskiEngine/adaptive/fused_apply.hpp"
+#endif
 
 #ifdef USE_CUDA
 #include <ATen/cuda/CUDAEvent.h>
@@ -72,6 +78,7 @@ struct Args {
     double group_mb = -1.0;  // < 0: library default (CUDA apply_map group budget, 0 = one group)
     int fused = -1;          // < 0: library default (fused CUDA apply_map kernels on/off)
     bool grad_split = false;
+    bool fresh_map = false;
 };
 
 Args parse(int argc, char** argv) {
@@ -95,6 +102,7 @@ Args parse(int argc, char** argv) {
         else if (k == "--group-mb") a.group_mb = std::atof(v.c_str());
         else if (k == "--fused") a.fused = std::atoi(v.c_str());
         else if (k == "--grad-split") a.grad_split = std::atoi(v.c_str()) != 0;
+        else if (k == "--fresh-map") a.fresh_map = std::atoi(v.c_str()) != 0;
         else {
             std::cerr << "unknown argument " << k << "\n";
             std::exit(2);
@@ -205,6 +213,42 @@ int run_conv(const Args& a, const AdaptiveSparseTensor& t_cpu) {
                    y.features().sum().backward();
                    sync(dev);
                });
+        if (a.fresh_map) {
+            const bool weighted = kc.mode != AdaptiveConvMode::CenterSampled;
+            KernelMapEntry entry;
+            auto fresh = [&] {
+                KernelMapCache::instance().clear();
+                entry = KernelMapCache::instance().get_or_build(t, kc);
+                sync(dev);
+            };
+            report("conv_" + mode + "_fresh_upload", a, fresh, [&] {
+                entry.device->get(entry.map, dev, dtype, weighted);
+                sync(dev);
+            });
+#ifdef USE_CUDA
+            if (dev.is_cuda())
+                report("conv_" + mode + "_fresh_tiles", a,
+                       [&] {
+                           fresh();
+                           entry.device->get(entry.map, dev, dtype, weighted);
+                           sync(dev);
+                       },
+                       [&] {
+                           entry.device->tiles(
+                               entry.map, dev,
+                               minkowski::adaptive::detail::fused_tile_rows(a.channels, a.cout));
+                           entry.device->tiles(entry.map, dev, 256);
+                           sync(dev);
+                       });
+#endif
+            report("conv_" + mode + "_fresh_fwd", a, fresh, [&] {
+                torch::NoGradGuard ng;
+                auto y = adaptive_convolution(t, w, kc);
+                sync(dev);
+            });
+            KernelMapCache::instance().clear();
+            KernelMapCache::instance().get_or_build(t, kc);
+        }
         if (a.grad_split) {
             for (int which = 0; which < 2; ++which)
                 report("conv_" + mode + (which == 0 ? "_fwdbwdx" : "_fwdbwdw"), a,
