@@ -1,6 +1,7 @@
 #include "adaptive_tensor.hpp"
 #include "adaptive_topology.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -152,10 +153,11 @@ StepResult refine_step(const Topology &t, const at::Tensor &f, const std::vector
 // Merges leaves at `level` into their parents when the parent box is inside region.
 //
 // Keys are sorted by level first, so only two runs change: the merged leaves leave the
-// `level` run and their parents join the `level - 1` run. Only the merged leaves are sorted
-// (by parent, then index) and merged into that run; every other leaf keeps its order, and
-// the features of untouched runs are sliced instead of gathered, so pooling no longer sorts
-// and remaps every leaf. Keys, features and the reduction order (children of a parent in
+// `level` run and their parents join the `level - 1` run; every other leaf keeps its order,
+// and the features of untouched runs are sliced instead of gathered. No sort is needed: the
+// leaves of one parity class (coordinate & 1 per axis) have strictly increasing parents in
+// key order (c -> c >> 1 is monotone and one-to-one within a parity), so the parents in
+// (key, index) order are a merge of 2^D sorted lists, done in D rounds of pairwise merges. Keys, features and the reduction order (children of a parent in
 // index order) are those of sorting all entries (finish()); the only bit-level difference is
 // that untouched leaves keep -0.0 where 0 + x gave +0.0.
 StepResult coarsen_step(const Topology &t, const at::Tensor &f, const AxisAlignedRegion &region,
@@ -173,26 +175,39 @@ StepResult coarsen_step(const Topology &t, const at::Tensor &f, const AxisAligne
     Key parent;
     int64_t src;
   };
-  std::vector<Child> merged;
+  std::vector<std::vector<Child>> lists(size_t(1) << t.D); // per parity class
   std::vector<int64_t> kept; // leaves of the level run that stay
-  merged.reserve(static_cast<size_t>(e1 - b1));
   for (int64_t i = b1; i < e1; ++i) {
-    const Key p = detail::parent_key(t.keys[i]);
-    if (inside(t, p, region))
-      merged.push_back({p, i});
-    else
+    const Key &k = t.keys[i];
+    const Key p = detail::parent_key(k);
+    if (!inside(t, p, region)) {
       kept.push_back(i);
+      continue;
+    }
+    size_t cls = 0;
+    for (int d = 0; d < t.D; ++d)
+      cls |= static_cast<size_t>(k.coordinates[d] & 1) << d;
+    lists[cls].push_back({p, i});
   }
-  if (merged.empty())
-    return {};
-  changed = true;
-  std::sort(merged.begin(), merged.end(), [](const Child &a, const Child &b) {
+  const auto before = [](const Child &a, const Child &b) {
     if (detail::key_less(a.parent, b.parent))
       return true;
     if (detail::key_less(b.parent, a.parent))
       return false;
     return a.src < b.src;
-  });
+  };
+  for (size_t half = lists.size() / 2; half > 0; half /= 2)
+    for (size_t c = 0; c < half; ++c) {
+      std::vector<Child> m(lists[c].size() + lists[c + half].size());
+      std::merge(lists[c].begin(), lists[c].end(), lists[c + half].begin(),
+                 lists[c + half].end(), m.begin(), before);
+      lists[c] = std::move(m);
+      lists[c + half] = {};
+    }
+  const std::vector<Child> &merged = lists[0];
+  if (merged.empty())
+    return {};
+  changed = true;
   std::vector<Key> parents;
   std::vector<int64_t> src, dst;
   src.reserve(merged.size());
