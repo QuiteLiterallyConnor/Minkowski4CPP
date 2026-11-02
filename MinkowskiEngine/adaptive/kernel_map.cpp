@@ -2,6 +2,7 @@
 #include "adaptive_topology.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <deque>
 #include <list>
@@ -347,48 +348,74 @@ bool to_part_map(const AdaptiveKernelMap &m, const Topology &out, PartMap &pm) {
 // keys). False if a pair links two parts or an index does not fit in int32.
 bool extract_parts(const AdaptiveKernelMap &m, const Topology &in, const Topology &out,
                    const Split &in_split, const Split &out_split, std::vector<PartMap> &pm) {
-  const size_t np = pm.size();
-  std::vector<int32_t> in_part, in_local, out_part, out_local;
-  auto locals = [](const Split &s, int64_t n, std::vector<int32_t> &part,
-                   std::vector<int32_t> &local) {
-    if (n > INT32_MAX)
-      return false;
-    part.assign(static_cast<size_t>(n), -1);
-    local.assign(static_cast<size_t>(n), -1);
-    for (size_t p = 0; p < s.leaves.size(); ++p)
-      for (size_t i = 0; i < s.leaves[p].size(); ++i) {
-        part[s.leaves[p][i]] = static_cast<int32_t>(p);
-        local[s.leaves[p][i]] = static_cast<int32_t>(i);
-      }
-    return true;
-  };
-  if (!locals(in_split, in.size(), in_part, in_local) ||
-      !locals(out_split, out.size(), out_part, out_local))
+  const int64_t np = static_cast<int64_t>(pm.size());
+  if (in.size() > INT32_MAX || out.size() > INT32_MAX)
     return false;
-  for (size_t p = 0; p < np; ++p) {
-    pm[p].offsets.assign(1, 0);
-    pm[p].out_counts.assign(out.counts.size(), 0);
-    for (int64_t o : out_split.leaves[p])
-      ++pm[p].out_counts[out.keys[o].level];
-  }
+  // Part of every input leaf and its index inside the part.
+  std::vector<int32_t> in_part(static_cast<size_t>(in.size())), in_local(in_part.size());
+  // Per part and level: the part's outputs at that level are one run of the whole topology's
+  // outputs (level first, then parts along x); level_begin indexes out_split.leaves[p].
+  std::vector<std::vector<int64_t>> level_begin(static_cast<size_t>(np));
+  const size_t nl = out.counts.size();
+  std::atomic<bool> ok{true};
   const int64_t *ip = m.in_index.data_ptr<int64_t>();
   const int64_t *op = m.out_index.data_ptr<int64_t>();
   const double *wp = m.weight.data_ptr<double>();
   const bool weighted = pm[0].weighted();
-  for (int64_t k = 0; k < m.num_kernels; ++k) {
-    for (int64_t q = m.kernel_offsets[k]; q < m.kernel_offsets[k + 1]; ++q) {
-      const int32_t p = out_part[op[q]];
-      if (p < 0 || in_part[ip[q]] != p)
-        return false;
-      pm[p].in.push_back(in_local[ip[q]]);
-      pm[p].out.push_back(out_local[op[q]]);
-      if (weighted)
-        pm[p].weight.push_back(wp[q]);
+  const int blocks = detail::parallel_block_count(np, m.in_index.numel() + in.size());
+  detail::run_parallel_blocks(np, blocks, [&](int, int64_t p_begin, int64_t p_end) {
+    for (int64_t p = p_begin; p < p_end; ++p) {
+      const auto &leaves = in_split.leaves[p];
+      for (size_t i = 0; i < leaves.size(); ++i) {
+        in_part[leaves[i]] = static_cast<int32_t>(p);
+        in_local[leaves[i]] = static_cast<int32_t>(i);
+      }
+      const auto &outs = out_split.leaves[p];
+      PartMap &a = pm[p];
+      a.out_counts.assign(nl, 0);
+      for (int64_t o : outs)
+        ++a.out_counts[out.keys[o].level];
+      auto &lb = level_begin[p];
+      lb.assign(nl + 1, 0);
+      for (size_t l = 0; l < nl; ++l) {
+        lb[l + 1] = lb[l] + a.out_counts[l];
+        if (a.out_counts[l] > 0 && outs[lb[l + 1] - 1] - outs[lb[l]] + 1 != a.out_counts[l])
+          ok = false; // not one run: the split assumption does not hold
+      }
     }
-    for (size_t p = 0; p < np; ++p)
-      pm[p].offsets.push_back(static_cast<int64_t>(pm[p].in.size()));
-  }
-  return true;
+  });
+  if (!ok)
+    return false;
+  detail::run_parallel_blocks(np, blocks, [&](int, int64_t p_begin, int64_t p_end) {
+    for (int64_t p = p_begin; p < p_end && ok; ++p) {
+      PartMap &a = pm[p];
+      const auto &outs = out_split.leaves[p];
+      const auto &lb = level_begin[p];
+      a.offsets.assign(1, 0);
+      for (int64_t k = 0; k < m.num_kernels; ++k) {
+        const int64_t *kb = op + m.kernel_offsets[k], *ke = op + m.kernel_offsets[k + 1];
+        for (size_t l = 0; l < nl; ++l) {
+          if (lb[l + 1] == lb[l])
+            continue;
+          const int64_t first = outs[lb[l]], last = outs[lb[l + 1] - 1];
+          const int64_t q0 = std::lower_bound(kb, ke, first) - op;
+          const int64_t q1 = std::upper_bound(op + q0, ke, last) - op;
+          for (int64_t q = q0; q < q1; ++q) {
+            if (in_part[ip[q]] != p) {
+              ok = false; // a tap crossed between parts
+              return;
+            }
+            a.in.push_back(in_local[ip[q]]);
+            a.out.push_back(static_cast<int32_t>(op[q] - first + lb[l]));
+            if (weighted)
+              a.weight.push_back(wp[q]);
+          }
+        }
+        a.offsets.push_back(static_cast<int64_t>(a.in.size()));
+      }
+    }
+  });
+  return ok;
 }
 
 // The map of a split topology from its parts' maps. Pairs come out ordered by slot, then by
