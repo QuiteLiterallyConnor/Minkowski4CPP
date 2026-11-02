@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
+
+#ifdef USE_CUDA
+#include "gaussian/gaussian_cuda.hpp"
+#endif
 
 namespace minkowski {
 namespace gaussian {
@@ -29,6 +34,41 @@ void check_image(const at::Tensor &t, const char *name) {
               " must have shape [H, W, 3]");
 }
 
+#ifdef USE_CUDA
+// One autograd node for the whole SSIM (see gaussian_ssim_cuda.cu); gradient for the prediction only.
+struct FusedSsimFunction : public torch::autograd::Function<FusedSsimFunction> {
+  static at::Tensor forward(torch::autograd::AutogradContext *ctx, const at::Tensor &prediction,
+                            const at::Tensor &target, const std::vector<double> &taps) {
+    const auto x = prediction.contiguous(), y = target.contiguous();
+    const int64_t h = x.size(0), w = x.size(1);
+    auto map = at::empty({3, h, w}, x.options());
+    auto partials = at::empty({3, 3, h, w}, x.options());
+    detail::ssim_forward_cuda(x, y, window(taps), map, partials);
+    ctx->save_for_backward({x, y, partials});
+    ctx->saved_data["taps"] = taps;
+    return map.mean();
+  }
+
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext *ctx,
+                                                 torch::autograd::variable_list grads) {
+    const auto saved = ctx->get_saved_variables();
+    const auto &x = saved[0];
+    auto grad_x = at::empty_like(x);
+    detail::ssim_backward_cuda(x, saved[1], saved[2], window(ctx->saved_data["taps"].toDoubleVector()),
+                               grads[0], 1.0 / static_cast<double>(x.numel()), grad_x);
+    return {grad_x, at::Tensor(), at::Tensor()};
+  }
+
+  static detail::SsimWindow window(const std::vector<double> &taps) {
+    detail::SsimWindow win{};
+    win.radius = static_cast<int>(taps.size() / 2);
+    for (size_t i = 0; i < taps.size(); ++i)
+      win.w[i] = static_cast<float>(taps[i]);
+    return win;
+  }
+};
+#endif
+
 } // namespace
 
 at::Tensor l1_loss(const at::Tensor &prediction, const at::Tensor &target) {
@@ -44,24 +84,68 @@ at::Tensor ssim(const at::Tensor &prediction, const at::Tensor &target,
   TORCH_CHECK(prediction.sizes() == target.sizes(),
               "prediction and target must have the same shape");
   TORCH_CHECK(window > 0 && window % 2 == 1, "SSIM window must be odd");
+#ifdef USE_CUDA
+  if (prediction.is_cuda() && detail::cuda_fused_ssim() && window <= detail::kSsimMaxWindow &&
+      !target.requires_grad() && prediction.scalar_type() == at::kFloat &&
+      target.scalar_type() == at::kFloat && target.device() == prediction.device()) {
+    // The Gaussian taps of the LibTorch path below, computed on the host so the step never waits
+    // for the device.
+    const auto c = at::arange(window, at::kFloat) - static_cast<double>(window / 2);
+    auto host = at::exp(-(c * c) / (2.0 * sigma * sigma));
+    const auto taps = (host / host.sum()).to(at::kDouble);
+    return FusedSsimFunction::apply(
+        prediction, target,
+        std::vector<double>(taps.data_ptr<double>(), taps.data_ptr<double>() + window));
+  }
+#endif
   const auto options = prediction.options();
   auto coordinates =
       at::arange(window, options) - static_cast<double>(window / 2);
   auto kernel = at::exp(-(coordinates * coordinates) / (2.0 * sigma * sigma));
   kernel = kernel / kernel.sum();
-  const auto window2d = kernel.unsqueeze(1) * kernel.unsqueeze(0);
-  const auto weight = window2d.expand({3, 1, window, window}).contiguous();
 
   const auto x = prediction.permute({2, 0, 1}).unsqueeze(0);
   const auto y = target.permute({2, 0, 1}).unsqueeze(0);
-  auto filter = [&](const at::Tensor &t) {
-    return at::conv2d(t, weight, {}, 1, window / 2, 1, 3);
-  };
-  const auto mu_x = filter(x), mu_y = filter(y);
+  at::Tensor mu_x, mu_y, e_xx, e_yy, e_xy; // [1, 3, H, W] local moments
+  if (prediction.is_cuda()) {
+    // cuDNN's dense depthwise window x window filter is already fast (and
+    // faster than the separable form below on CUDA): unchanged.
+    const auto window2d = kernel.unsqueeze(1) * kernel.unsqueeze(0);
+    const auto weight = window2d.expand({3, 1, window, window}).contiguous();
+    auto filter = [&](const at::Tensor &t) {
+      return at::conv2d(t, weight, {}, 1, window / 2, 1, 3);
+    };
+    mu_x = filter(x);
+    mu_y = filter(y);
+    e_xx = filter(x * x);
+    e_yy = filter(y * y);
+    e_xy = filter(x * y);
+  } else {
+    // CPU: the window is the outer product of the 1-D kernel and zero padding
+    // separates too, so a vertical then a horizontal 1-D depthwise pass equals
+    // the dense filter with 2 * window instead of window^2 taps per pixel.
+    // The five moments of the three channels are filtered as one batch of 15
+    // planes (2 convolutions instead of 5, forward and backward).
+    const auto planes = at::cat({x, y, x * x, y * y, x * y}, 1);
+    const auto vertical =
+        kernel.view({1, 1, window, 1}).expand({15, 1, window, 1}).contiguous();
+    const auto horizontal =
+        kernel.view({1, 1, 1, window}).expand({15, 1, 1, window}).contiguous();
+    const auto filtered = at::conv2d(
+        at::conv2d(planes, vertical, {}, 1, at::IntArrayRef{window / 2, 0}, 1,
+                   15),
+        horizontal, {}, 1, at::IntArrayRef{0, window / 2}, 1, 15);
+    const auto m = filtered.split(3, 1);
+    mu_x = m[0];
+    mu_y = m[1];
+    e_xx = m[2];
+    e_yy = m[3];
+    e_xy = m[4];
+  }
   const auto mu_xx = mu_x * mu_x, mu_yy = mu_y * mu_y, mu_xy = mu_x * mu_y;
-  const auto sigma_xx = filter(x * x) - mu_xx;
-  const auto sigma_yy = filter(y * y) - mu_yy;
-  const auto sigma_xy = filter(x * y) - mu_xy;
+  const auto sigma_xx = e_xx - mu_xx;
+  const auto sigma_yy = e_yy - mu_yy;
+  const auto sigma_xy = e_xy - mu_xy;
   constexpr double c1 = 0.01 * 0.01, c2 = 0.03 * 0.03;
   const auto map = ((2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)) /
                    ((mu_xx + mu_yy + c1) * (sigma_xx + sigma_yy + c2));
@@ -297,6 +381,15 @@ void GaussianTrainer::reset_opacity() {
   moment1_[3].zero_();
   moment2_[3].zero_();
 }
+
+#ifdef USE_CUDA
+namespace detail {
+bool &cuda_fused_ssim() {
+  static bool on = true;
+  return on;
+}
+} // namespace detail
+#endif
 
 } // namespace gaussian
 } // namespace minkowski
