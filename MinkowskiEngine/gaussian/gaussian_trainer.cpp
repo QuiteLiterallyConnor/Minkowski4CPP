@@ -3,6 +3,11 @@
 #include <algorithm>
 #include <cmath>
 
+#ifdef USE_CUDA
+#include "gaussian/gaussian_cuda.hpp"
+#include <torch/csrc/autograd/variable.h>
+#endif
+
 namespace minkowski {
 namespace gaussian {
 namespace {
@@ -120,6 +125,25 @@ void GaussianTrainer::adam_step() {
     const auto &g = p.grad();
     if (!g.defined() || p.numel() == 0)
       continue;
+#ifdef USE_CUDA
+    // One kernel per parameter instead of eight (same float32 formulas).
+    if (p.is_cuda() && detail::cuda_fused_adam() && p.scalar_type() == at::kFloat &&
+        g.scalar_type() == at::kFloat && p.is_contiguous() && g.is_contiguous() &&
+        moment1_[i].is_contiguous() && moment2_[i].is_contiguous()) {
+      const detail::AdamParams k{static_cast<float>(config_.beta1),
+                                 static_cast<float>(1.0 - config_.beta1),
+                                 static_cast<float>(config_.beta2),
+                                 static_cast<float>(1.0 - config_.beta2),
+                                 detail::adam_inverse_bias2(bias2),
+                                 static_cast<float>(config_.epsilon),
+                                 static_cast<float>(-learning_rate(i) / bias1)};
+      at::Tensor param = p;
+      detail::adam_update_cuda(param, g, moment1_[i], moment2_[i], k);
+      // Written through data pointers: bump the version like the in-place ops would.
+      torch::autograd::impl::bump_version(param);
+      continue;
+    }
+#endif
     moment1_[i].mul_(config_.beta1).add_(g, 1.0 - config_.beta1);
     moment2_[i].mul_(config_.beta2).addcmul_(g, g, 1.0 - config_.beta2);
     const auto denominator =
@@ -297,6 +321,15 @@ void GaussianTrainer::reset_opacity() {
   moment1_[3].zero_();
   moment2_[3].zero_();
 }
+
+#ifdef USE_CUDA
+namespace detail {
+bool &cuda_fused_adam() {
+  static bool on = true;
+  return on;
+}
+} // namespace detail
+#endif
 
 } // namespace gaussian
 } // namespace minkowski

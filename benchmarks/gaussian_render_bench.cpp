@@ -7,6 +7,7 @@
 //   gaussian_render_bench [--input scene.ply | --synthetic]
 //       [--counts 5000,20000,0] (0 = all splats) [--sizes 128,512]
 //       [--devices cpu,cuda,cuda-torch] [--warmup 2] [--iterations 5]
+//       [--fused-adam 0|1] (CUDA Adam update in --train, default 1)
 //       [--train] [--label name] [--output results.json]
 //       [--dump-grads prefix] [--compare-grads prefix]
 //
@@ -24,6 +25,7 @@
 #include <torch/version.h>
 
 #ifdef USE_CUDA
+#include "gaussian/gaussian_cuda.hpp"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <cuda_runtime.h>
@@ -115,7 +117,9 @@ std::pair<uint64_t, uint64_t> cuda_peak(const torch::Device &device) {
   if (device.is_cuda()) {
     const auto stats =
         c10::cuda::CUDACachingAllocator::getDeviceStats(device.index());
-    const auto all = static_cast<size_t>(c10::CachingAllocator::StatType::AGGREGATE);
+    // c10::CachingDeviceAllocator names StatType in LibTorch 2.5 (CUDA 12.4
+    // profile) and re-exports c10::CachingAllocator's in 2.15.
+    const auto all = static_cast<size_t>(c10::CachingDeviceAllocator::StatType::AGGREGATE);
     return {static_cast<uint64_t>(stats.allocated_bytes[all].peak),
             static_cast<uint64_t>(stats.reserved_bytes[all].peak)};
   }
@@ -165,6 +169,7 @@ struct Record {
   double mean_alpha = 0.0;
   uint64_t cuda_peak_allocated_forward = 0, cuda_peak_allocated_backward = 0;
   uint64_t cuda_peak_reserved = 0, process_peak = 0;
+  uint64_t cuda_peak_allocated_train = 0, cuda_peak_reserved_train = 0;
   bool compared = false, grad_bit_identical = true;
   double grad_max_abs_diff = 0.0, grad_max_rel_diff = 0.0;
   Samples samples;
@@ -226,6 +231,10 @@ int main(int argc, char **argv) {
         iterations = std::max(1, std::stoi(next()));
       else if (a == "--train")
         train = true;
+#ifdef USE_CUDA
+      else if (a == "--fused-adam") // 0: LibTorch Adam ops, 1: fused CUDA kernel (default)
+        minkowski::gaussian::detail::cuda_fused_adam() = std::stoi(next()) != 0;
+#endif
       else if (a == "--label")
         label = next();
       else if (a == "--output")
@@ -398,6 +407,8 @@ int main(int argc, char **argv) {
             }
           }
           if (train) {
+            sync(device);
+            reset_cuda_peak(device);
             auto model = base.clone();
             GaussianTrainerConfig config;
             config.densify = false;
@@ -413,6 +424,8 @@ int main(int argc, char **argv) {
               if (it >= warmup)
                 record.samples.train.push_back(elapsed_ms(t0));
             }
+            record.cuda_peak_allocated_train = cuda_peak(device).first;
+            record.cuda_peak_reserved_train = cuda_peak(device).second;
           }
           record.process_peak = process_peak_bytes();
           std::cerr << label << " " << device_name << " n=" << count << " "
@@ -448,6 +461,8 @@ int main(int argc, char **argv) {
            << ", \"cuda_peak_allocated_backward\": "
            << r.cuda_peak_allocated_backward
            << ", \"cuda_peak_reserved\": " << r.cuda_peak_reserved
+           << ", \"cuda_peak_allocated_train\": " << r.cuda_peak_allocated_train
+           << ", \"cuda_peak_reserved_train\": " << r.cuda_peak_reserved_train
            << ", \"process_peak_working_set\": " << r.process_peak << ", ";
       if (r.compared)
         file << "\"grad_bit_identical\": "
