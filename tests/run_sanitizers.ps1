@@ -120,6 +120,10 @@ foreach ($job in $Jobs) {
         ([regex]::Matches($text, 'ERROR: AddressSanitizer')).Count
     } elseif ($tool -in 'plain', 'run') {
         ([regex]::Matches($text, 'illegal memory access|misaligned address|unspecified launch failure|device-side assert')).Count
+    } elseif ($tool -eq 'racecheck') {
+        # racecheck prints no ERROR SUMMARY; count its hazards (errors and warnings).
+        $e = [regex]::Match($text, 'RACECHECK SUMMARY: \d+ hazards? displayed \((\d+) errors?, (\d+) warnings?\)')
+        if ($e.Success) { [int]$e.Groups[1].Value + [int]$e.Groups[2].Value } else { -1 }
     } else {
         $e = [regex]::Match($text, 'ERROR SUMMARY: (\d+) error')
         if ($e.Success) { [int]$e.Groups[1].Value } else { -1 }
