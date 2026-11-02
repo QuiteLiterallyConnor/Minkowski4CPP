@@ -13,6 +13,9 @@
 #include <utility>
 #include <vector>
 
+// Feature-test macro: the refine* methods accept `drop_empty`.
+#define MINK_ADAPTIVE_HAS_DROP_EMPTY 1
+
 namespace minkowski {
 namespace adaptive {
 
@@ -74,8 +77,19 @@ public:
   // Replaces leaves intersecting `region` by all 2^D children until they reach
   // target_level. Already-fine leaves are untouched. Replicate copies the parent
   // feature to each child; Split divides it by 2^D (conserves sums).
+  //
+  // drop_empty (opt-in, every refine* method; requires source points, i.e. from_points):
+  // a refined leaf is replaced only by the children that contain at least one source
+  // point, and leaves containing no source point are not refined. Split then divides by
+  // the number of kept children, so sums are still conserved. On a from_points tensor,
+  // refine / refine_by_density / refine_by_variance (non-negative thresholds) give exactly
+  // the default result with its point-free leaves removed (same keys and features for the
+  // remaining leaves). The cost is one point-to-leaf pass per refinement step. Uncovered
+  // space (dropped children) behaves like any unoccupied region: interpolate() returns
+  // zeros there (or the mean of the finest occupied ancestor cell with
+  // InterpFallback::CoarserAncestor) and convolutions see no neighbour.
   void refine(const AxisAlignedRegion &region, uint32_t target_level,
-              RefinePolicy policy = RefinePolicy::Replicate);
+              RefinePolicy policy = RefinePolicy::Replicate, bool drop_empty = false);
   // Merges leaves into ancestors down to target_level, bottom-up, for every
   // parent whose whole box lies inside `region`. Only occupied descendants
   // contribute to the reduction.
@@ -83,11 +97,12 @@ public:
                Reduction reduction = Reduction::Mean);
   // Require source points (from_points). Refine leaves one level at a time, up
   // to max_depth, while the criterion holds; children replicate the parent.
-  void refine_by_density(int64_t points_per_leaf_threshold);
-  void refine_by_variance(double feature_variance_threshold);
+  void refine_by_density(int64_t points_per_leaf_threshold, bool drop_empty = false);
+  void refine_by_variance(double feature_variance_threshold, bool drop_empty = false);
   void refine_if(const std::function<bool(int64_t leaf, const std::array<double, 4> &lo,
                                           const std::array<double, 4> &hi, uint32_t level)>
-                     &criterion);
+                     &criterion,
+                 bool drop_empty = false);
   // Recomputes features of the current leaves from the source points (mean
   // per leaf; leaves containing no point get zeros). Differentiable w.r.t. the
   // point features passed to from_points (detach them first to opt out).
@@ -107,6 +122,11 @@ public:
 
 private:
   AdaptiveSparseTensor() = default;
+  // One refinement step over the selected leaves (drop_empty: see refine()). `leaf` is the
+  // point-to-leaf assignment when the caller already has it. Returns false when nothing
+  // was refined.
+  bool refine_selected(std::vector<char> &sel, RefinePolicy policy, bool drop_empty,
+                       const std::vector<int64_t> *leaf);
 
   std::shared_ptr<const detail::Topology> topology_;
   at::Tensor features_;

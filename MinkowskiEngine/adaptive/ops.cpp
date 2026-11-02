@@ -1,7 +1,11 @@
 #include "ops.hpp"
 #include "adaptive_topology.hpp"
 
+#include <algorithm>
+#include <memory>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace minkowski {
 namespace adaptive {
@@ -97,8 +101,53 @@ AdaptiveSparseTensor adaptive_pool(const AdaptiveSparseTensor &input, uint32_t t
   return out;
 }
 
+namespace {
+
+// InterpFallback::CoarserAncestor support. A cell "holds data" when at least one active leaf
+// lies strictly inside it. Cells at or below the coarsest present level are answered by the
+// topology's node table (kInternal); coarser cells by `coarse`, the set of leaf ancestors
+// above that level (small: at most one entry per occupied cell of each coarse level).
+struct AncestorIndex {
+  const Topology &t;
+  std::unordered_set<detail::Key, detail::KeyHash> coarse;
+
+  explicit AncestorIndex(const Topology &topo) : t(topo) {
+    if (t.keys.empty() || t.present_levels.front() == 0)
+      return;
+    const uint32_t lmin = t.present_levels.front();
+    for (const auto &k : t.keys) {
+      detail::Key a = detail::ancestor_at(k, lmin - 1);
+      while (coarse.insert(a).second && a.level > 0)
+        a = detail::parent_key(a);
+    }
+  }
+
+  bool holds_data(const detail::Key &k) const {
+    if (k.level < t.present_levels.front())
+      return coarse.count(k) != 0;
+    return t.node_table().lookup(k) == Topology::NodeTable::kInternal;
+  }
+
+  // The finest cell that contains q and holds data; false when no cell does (q is in an
+  // unoccupied level-0 cell or outside the representable range). Holding data is
+  // inherited by every coarser cell, so the walk stops at the first cell without data.
+  bool deepest(const DVec &q, detail::Key &out) const {
+    bool found = false;
+    detail::Key k;
+    for (uint32_t l = 0; l <= t.max_depth; ++l) {
+      if (!t.locate(q, l, k) || !holds_data(k))
+        break;
+      out = k;
+      found = true;
+    }
+    return found;
+  }
+};
+
+} // namespace
+
 at::Tensor interpolate(const AdaptiveSparseTensor &input, const at::Tensor &points,
-                       InterpMode mode) {
+                       InterpMode mode, InterpFallback fallback) {
   const Topology &t = *input.topology();
   auto pts = points.to(torch::kFloat64).cpu().contiguous();
   if (pts.dim() != 2 || pts.size(1) != t.D)
@@ -106,43 +155,142 @@ at::Tensor interpolate(const AdaptiveSparseTensor &input, const at::Tensor &poin
   const int64_t M = pts.size(0);
   const double *p = pts.data_ptr<double>();
 
+  // Points are split into contiguous blocks handled on separate threads; concatenating the
+  // blocks in order gives exactly the serial (point, then leaf) order.
+  struct Pairs {
+    std::vector<int64_t> pt_idx, leaf_idx;
+    std::vector<double> w;
+    std::vector<int64_t> miss_pt;      // CoarserAncestor: uncovered points ...
+    std::vector<detail::Key> miss_key; // ... and the cell whose leaves they average
+  };
+  if (M > 0 && t.size() > 0)
+    t.node_table(); // build the shared lookup table once, before the workers start
+  const bool use_fallback =
+      fallback == InterpFallback::CoarserAncestor && M > 0 && t.size() > 0;
+  std::unique_ptr<AncestorIndex> ancestors;
+  if (use_fallback)
+    ancestors = std::make_unique<AncestorIndex>(t);
+  const int blocks = detail::parallel_block_count(
+      M, M * (mode == InterpMode::Nearest ? 1 : 8));
+  std::vector<Pairs> parts(static_cast<size_t>(blocks));
+  detail::run_parallel_blocks(M, blocks, [&](int b, int64_t m_begin, int64_t m_end) {
+    auto &pt_idx = parts[b].pt_idx, &leaf_idx = parts[b].leaf_idx;
+    auto &w = parts[b].w;
+    std::vector<std::pair<int64_t, double>> hits;
+    for (int64_t m = m_begin; m < m_end; ++m) {
+      DVec q{};
+      for (int d = 0; d < t.D; ++d)
+        q[d] = p[m * t.D + d];
+      const int64_t j = t.find_containing(q);
+      if (j < 0) {
+        detail::Key a;
+        if (use_fallback && ancestors->deepest(q, a)) {
+          parts[b].miss_pt.push_back(m);
+          parts[b].miss_key.push_back(a);
+        }
+        continue;
+      }
+      if (mode == InterpMode::Nearest) {
+        pt_idx.push_back(m);
+        leaf_idx.push_back(j);
+        w.push_back(1.0);
+        continue;
+      }
+      const DVec s = t.size_at(t.keys[j].level);
+      DVec lo{}, hi{};
+      for (int d = 0; d < t.D; ++d) {
+        lo[d] = q[d] - 0.5 * s[d];
+        hi[d] = q[d] + 0.5 * s[d];
+      }
+      hits.clear();
+      double total = 0.0;
+      t.for_each_overlap(lo, hi, [&](int64_t leaf, double ov) {
+        hits.emplace_back(leaf, ov);
+        total += ov;
+      });
+      for (auto &h : hits) {
+        pt_idx.push_back(m);
+        leaf_idx.push_back(h.first);
+        w.push_back(h.second / total);
+      }
+    }
+  });
   std::vector<int64_t> pt_idx, leaf_idx;
   std::vector<double> w;
-  std::vector<std::pair<int64_t, double>> hits;
-  for (int64_t m = 0; m < M; ++m) {
-    DVec q{};
-    for (int d = 0; d < t.D; ++d)
-      q[d] = p[m * t.D + d];
-    const int64_t j = t.find_containing(q);
-    if (j < 0)
-      continue;
-    if (mode == InterpMode::Nearest) {
-      pt_idx.push_back(m);
-      leaf_idx.push_back(j);
-      w.push_back(1.0);
-      continue;
-    }
-    const DVec s = t.size_at(t.keys[j].level);
-    DVec lo{}, hi{};
-    for (int d = 0; d < t.D; ++d) {
-      lo[d] = q[d] - 0.5 * s[d];
-      hi[d] = q[d] + 0.5 * s[d];
-    }
-    hits.clear();
-    double total = 0.0;
-    t.for_each_overlap(lo, hi, [&](int64_t leaf, double ov) {
-      hits.emplace_back(leaf, ov);
-      total += ov;
-    });
-    for (auto &h : hits) {
-      pt_idx.push_back(m);
-      leaf_idx.push_back(h.first);
-      w.push_back(h.second / total);
+  if (blocks == 1) {
+    pt_idx.swap(parts[0].pt_idx);
+    leaf_idx.swap(parts[0].leaf_idx);
+    w.swap(parts[0].w);
+  } else {
+    for (auto &part : parts) {
+      pt_idx.insert(pt_idx.end(), part.pt_idx.begin(), part.pt_idx.end());
+      leaf_idx.insert(leaf_idx.end(), part.leaf_idx.begin(), part.leaf_idx.end());
+      w.insert(w.end(), part.w.begin(), part.w.end());
     }
   }
 
   const auto &x = input.features();
   auto y = torch::zeros({M, x.size(1)}, x.options());
+  if (use_fallback) {
+    // Uncovered point -> volume-weighted mean of the leaves inside its cell. Cells get rows
+    // in first-use order (serial point order), leaves contribute in index order: the result
+    // does not depend on the number of worker blocks.
+    std::unordered_map<detail::Key, int64_t, detail::KeyHash> row_of;
+    std::vector<detail::Key> cells;
+    std::vector<int64_t> miss_pt, miss_row;
+    uint32_t lo_level = AdaptiveVoxelConfig::kMaxSupportedDepth, hi_level = 0;
+    for (auto &part : parts)
+      for (size_t i = 0; i < part.miss_pt.size(); ++i) {
+        const detail::Key &k = part.miss_key[i];
+        auto it = row_of.try_emplace(k, static_cast<int64_t>(cells.size())).first;
+        if (it->second == static_cast<int64_t>(cells.size())) {
+          cells.push_back(k);
+          lo_level = std::min(lo_level, k.level);
+          hi_level = std::max(hi_level, k.level);
+        }
+        miss_pt.push_back(part.miss_pt[i]);
+        miss_row.push_back(it->second);
+      }
+    if (!cells.empty()) {
+      std::vector<int64_t> cell_row, cell_leaf;
+      std::vector<double> cell_w, total(cells.size(), 0.0);
+      const double *vol = t.volumes.data_ptr<double>();
+      for (int64_t i = 0; i < t.size(); ++i) {
+        const detail::Key &k = t.keys[static_cast<size_t>(i)];
+        if (k.level <= lo_level)
+          continue; // a cell only averages leaves strictly inside it
+        detail::Key a = detail::ancestor_at(k, std::min(hi_level, k.level - 1));
+        while (true) {
+          auto it = row_of.find(a);
+          if (it != row_of.end()) {
+            cell_row.push_back(it->second);
+            cell_leaf.push_back(i);
+            cell_w.push_back(vol[i]);
+            total[static_cast<size_t>(it->second)] += vol[i];
+          }
+          if (a.level <= lo_level)
+            break;
+          a = detail::parent_key(a);
+        }
+      }
+      for (size_t e = 0; e < cell_w.size(); ++e)
+        cell_w[e] /= total[static_cast<size_t>(cell_row[e])];
+      const auto to_dev = [&](std::vector<int64_t> &v) {
+        return torch::from_blob(v.data(), {static_cast<int64_t>(v.size())}, torch::kInt64)
+            .clone()
+            .to(x.device());
+      };
+      auto w_c = torch::from_blob(cell_w.data(), {static_cast<int64_t>(cell_w.size())},
+                                  torch::kFloat64)
+                     .clone()
+                     .to(x.scalar_type())
+                     .to(x.device())
+                     .unsqueeze(1);
+      auto means = torch::zeros({static_cast<int64_t>(cells.size()), x.size(1)}, x.options())
+                       .index_add(0, to_dev(cell_row), x.index_select(0, to_dev(cell_leaf)) * w_c);
+      y = y.index_add(0, to_dev(miss_pt), means.index_select(0, to_dev(miss_row)));
+    }
+  }
   if (pt_idx.empty()) { // no query hits a leaf: zeros that stay connected to the features
     auto none = torch::empty({0}, torch::TensorOptions(torch::kInt64).device(x.device()));
     return y.index_add_(0, none, x.index_select(0, none));
