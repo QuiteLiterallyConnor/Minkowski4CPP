@@ -29,16 +29,12 @@
 #include "gaussian/gaussian_adaptive.hpp"
 #include "third_party/json.hpp"
 #include "point_dataset.hpp"
+#include "benchmark_memory.hpp"
 
 #include <torch/torch.h>
 
 #ifdef USE_CUDA
 #include <c10/cuda/CUDACachingAllocator.h>
-#endif
-#ifdef _WIN32
-#include <windows.h>
-#include <psapi.h>
-#pragma comment(lib, "psapi.lib")
 #endif
 
 #include <algorithm>
@@ -671,15 +667,6 @@ TORCH_MODULE(GaussianSetNet);
 
 // ---------------------------------------------------------------- memory
 
-double peak_rss_mb() {
-#ifdef _WIN32
-  PROCESS_MEMORY_COUNTERS pmc{};
-  if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
-    return static_cast<double>(pmc.PeakWorkingSetSize) / (1024.0 * 1024.0);
-#endif
-  return -1.0;
-}
-
 double cuda_peak_mb(bool reserved = false) {
 #ifdef USE_CUDA
   if (torch::cuda::is_available()) {
@@ -1057,7 +1044,10 @@ int main(int argc, char **argv) {
             {"throughput_samples_per_s", static_cast<double>(test.size()) / eval_s},
             {"peak_cuda_alloc_mb_train", train_peak_alloc},
             {"peak_cuda_reserved_mb_train", train_peak_res},
-            {"peak_rss_mb", peak_rss_mb()},
+            {"peak_rss_mb", mink_bench::peak_rss_mb()},
+            {"peak_rss_source", mink_bench::peak_rss_source()},
+            {"peak_rss_scope", "process_lifetime_including_data_conversion_training_evaluation_inference"},
+            {"peak_cuda_train_scope", "training_loop_including_per_epoch_evaluation"},
             {"active_elements_mean", active_mean},
             {"active_elements_min", *std::min_element(active.begin(), active.end())},
             {"active_elements_max", *std::max_element(active.begin(), active.end())},
