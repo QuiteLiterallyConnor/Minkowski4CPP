@@ -14,6 +14,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#ifdef USE_CUDA
+#include <c10/cuda/CUDACachingAllocator.h>
+#include <c10/cuda/CUDAStream.h>
+#endif
+
 namespace minkowski {
 namespace adaptive {
 
@@ -248,6 +253,7 @@ struct PartDevice {
   at::Device device{at::kCPU};
   at::Tensor in, out, weight; // indices: uint16 bits (kInt16) if narrow, else int32; float64 weights
   bool narrow = false;        // local indices < 65536 stored in 16 bits (half the device memory)
+  size_t group = 0;           // backing upload group in PartDeviceStore
 };
 
 struct PartMap {
@@ -259,7 +265,7 @@ struct PartMap {
   std::vector<double> weight;      // VolumeWeighted only; CenterSampled weights are 1
   uint64_t hash = 0;
   // Uploaded on first device composition, freed with the part. Guarded by
-  // part_device_mutex(); not counted in bytes() (the budget covers host memory).
+  // PartDeviceStore::mutex; not counted in bytes() (the budget covers host memory).
   mutable std::vector<PartDevice> device_copies;
 
   bool weighted() const {
@@ -269,6 +275,56 @@ struct PartMap {
     return sizeof(PartMap) + signature.size() * sizeof(uint64_t) + keys.size() * sizeof(Key) +
            (out_counts.size() + offsets.size()) * sizeof(int64_t) +
            (in.size() + out.size()) * sizeof(int32_t) + weight.size() * sizeof(double);
+  }
+};
+
+
+// The upload slabs, rather than their per-part views, are the unit of eviction. Weak owners
+// do not prolong the host part's lifetime; in-flight composition holds its own tensor handles.
+// All part device_copies and these counters are protected by this mutex. When both mutexes
+// are needed, the outer KernelMapCache mutex is always acquired first.
+struct PartDeviceStore {
+  struct Group {
+    size_t id, bytes;
+    std::vector<std::weak_ptr<const PartMap>> owners;
+  };
+  using List = std::list<Group>;
+  std::mutex mutex;
+  size_t budget = size_t(-1), bytes = 0, peak_bytes = 0, hits = 0, misses = 0, next_id = 1;
+  List lru; // most recently used first
+  std::unordered_map<size_t, List::iterator> index;
+
+  void erase(List::iterator it) {
+    for (const auto &owner : it->owners)
+      if (const auto p = owner.lock()) {
+        auto &copies = p->device_copies;
+        copies.erase(std::remove_if(copies.begin(), copies.end(),
+                                    [&](const PartDevice &d) { return d.group == it->id; }),
+                     copies.end());
+      }
+    bytes -= it->bytes;
+    index.erase(it->id);
+    lru.erase(it);
+  }
+  void prune() {
+    for (auto it = lru.begin(); it != lru.end();) {
+      const auto current = it++;
+      if (std::all_of(current->owners.begin(), current->owners.end(),
+                       [](const auto &p) { return p.expired(); }))
+        erase(current);
+    }
+  }
+  void trim(size_t reserve = 0) {
+    while (!lru.empty() && bytes > budget - reserve)
+      erase(std::prev(lru.end()));
+  }
+  void touch(size_t id) {
+    const auto it = index.find(id);
+    if (it != index.end()) lru.splice(lru.begin(), lru, it->second);
+  }
+  void clear() {
+    while (!lru.empty()) erase(lru.begin());
+    hits = misses = peak_bytes = 0;
   }
 };
 
@@ -486,11 +542,6 @@ AdaptiveKernelMap compose_parts(const std::vector<std::shared_ptr<const PartMap>
 }
 
 #ifdef USE_CUDA
-std::mutex &part_device_mutex() {
-  static std::mutex m;
-  return m;
-}
-
 // The device copies of the parts' pair arrays. Parts without one on `device` are uploaded
 // together: their arrays are packed into one 16-bit, one int32 (and one float64) host buffer,
 // copied with one transfer each, and every part gets views into them. A part whose local leaf
@@ -498,23 +549,35 @@ std::mutex &part_device_mutex() {
 // stored narrow: 4 B per pair instead of 8. (A batch's buffers stay allocated until all of its
 // parts are freed.)
 std::vector<PartDevice> parts_on_device(const std::vector<std::shared_ptr<const PartMap>> &pm,
-                                        const at::Device &device) {
-  std::lock_guard<std::mutex> lock(part_device_mutex());
+                                        const at::Device &device, PartDeviceStore &store) {
+  std::lock_guard<std::mutex> lock(store.mutex);
+  store.prune();
   std::vector<PartDevice> out(pm.size());
   std::vector<size_t> missing;
+  std::unordered_map<const PartMap *, size_t> unique;
+  std::vector<size_t> representative(pm.size());
   for (size_t p = 0; p < pm.size(); ++p) {
+    const auto inserted = unique.emplace(pm[p].get(), p);
+    representative[p] = inserted.first->second;
+    if (!inserted.second) continue; // repeated sample in a batch: one upload and one owner
     bool found = false;
     for (const auto &d : pm[p]->device_copies)
       if (d.device == device) {
         out[p] = d;
+        store.touch(d.group);
+        ++store.hits;
         found = true;
         break;
       }
-    if (!found)
+    if (!found) {
+      ++store.misses;
       missing.push_back(p);
+    }
   }
-  if (missing.empty())
+  if (missing.empty()) {
+    for (size_t p = 0; p < pm.size(); ++p) out[p] = out[representative[p]];
     return out;
+  }
   const bool weighted = pm[missing[0]]->weighted();
   const auto fits16 = [](const PartMap &a) {
     int64_t n_out = 0;
@@ -537,6 +600,11 @@ std::vector<PartDevice> parts_on_device(const std::vector<std::shared_ptr<const 
     if (weighted)
       weights.insert(weights.end(), pm[p]->weight.begin(), pm[p]->weight.end());
   }
+  const size_t upload_bytes = pairs16.size() * sizeof(uint16_t) +
+                              pairs32.size() * sizeof(int32_t) + weights.size() * sizeof(double);
+  const bool retain = store.budget != 0 && upload_bytes <= store.budget;
+  const size_t group = retain ? store.next_id++ : 0;
+  if (retain) store.trim(upload_bytes); // evict before allocating when possible
   at::Tensor dev16, dev32, dev_weights;
   if (!pairs16.empty()) // kInt16 carries the uint16 bits; the kernel reads them as uint16
     dev16 = torch::from_blob(pairs16.data(), {static_cast<int64_t>(pairs16.size())}, torch::kInt16)
@@ -553,6 +621,7 @@ std::vector<PartDevice> parts_on_device(const std::vector<std::shared_ptr<const 
     const int64_t n = static_cast<int64_t>(pm[p]->in.size());
     PartDevice d;
     d.device = device;
+    d.group = group;
     d.narrow = fits16(*pm[p]);
     const at::Tensor &buf = d.narrow ? dev16 : dev32;
     int64_t &at = d.narrow ? at16 : at32;
@@ -567,9 +636,18 @@ std::vector<PartDevice> parts_on_device(const std::vector<std::shared_ptr<const 
       d.weight = dev_weights.slice(0, wat, wat + n);
       wat += n;
     }
-    pm[p]->device_copies.push_back(d);
+    if (retain) pm[p]->device_copies.push_back(d);
     out[p] = d;
   }
+  if (retain) {
+    PartDeviceStore::Group record{group, upload_bytes, {}};
+    for (size_t p : missing) record.owners.push_back(pm[p]);
+    store.lru.push_front(std::move(record));
+    store.index.emplace(group, store.lru.begin());
+    store.bytes += upload_bytes;
+    store.peak_bytes = std::max(store.peak_bytes, store.bytes);
+  }
+  for (size_t p = 0; p < pm.size(); ++p) out[p] = out[representative[p]];
   return out;
 }
 
@@ -580,7 +658,8 @@ std::vector<PartDevice> parts_on_device(const std::vector<std::shared_ptr<const 
 // The returned map has its kernel offsets; its host arrays are left undefined.
 AdaptiveKernelMap compose_parts_device(const std::vector<std::shared_ptr<const PartMap>> &pm,
                                        const Split &in_split, const Split &out_split,
-                                       const at::Device &device, KernelMapDeviceCache &dc) {
+                                       const at::Device &device, KernelMapDeviceCache &dc,
+                                       PartDeviceStore &store) {
   const size_t np = pm.size();
   const int64_t nk = static_cast<int64_t>(pm[0]->offsets.size()) - 1;
   const size_t nl = pm[0]->out_counts.size();
@@ -618,8 +697,14 @@ AdaptiveKernelMap compose_parts_device(const std::vector<std::shared_ptr<const P
       }
   }
   const int64_t segments = static_cast<int64_t>(table.size()) / 4;
-  const std::vector<PartDevice> copies = parts_on_device(pm, device);
+  const std::vector<PartDevice> copies = parts_on_device(pm, device, store);
+  const auto stream = c10::cuda::getCurrentCUDAStream(device.index());
   for (size_t p = 0; p < np; ++p) {
+    // An upload can originate on another stream; eviction after this async launch must
+    // not recycle its backing allocation until the composition's stream has finished.
+    for (const auto &tensor : {copies[p].in, copies[p].out, copies[p].weight})
+      if (tensor.defined())
+        c10::cuda::CUDACachingAllocator::recordStream(tensor.storage().data_ptr(), stream);
     table.push_back(reinterpret_cast<int64_t>(copies[p].in.data_ptr()));
     table.push_back(reinterpret_cast<int64_t>(copies[p].out.data_ptr()));
     table.push_back(copies[p].weight.defined() ? reinterpret_cast<int64_t>(copies[p].weight.data_ptr())
@@ -674,6 +759,7 @@ struct PartStore {
   size_t bytes = 0;
   size_t hits = 0;
   size_t misses = 0;
+  PartDeviceStore device;
   List lru; // most recently used first
   std::unordered_multimap<uint64_t, List::iterator> index;
 
@@ -710,6 +796,8 @@ struct PartStore {
     evict();
   }
   void clear() {
+    std::lock_guard<std::mutex> lock(device.mutex);
+    device.clear();
     lru.clear();
     index.clear();
     bytes = 0;
@@ -894,7 +982,7 @@ bool build_from_parts(const std::shared_ptr<const Topology> &in, const AdaptiveK
     }
 #ifdef USE_CUDA
     if (device.is_cuda() && detail::cuda_part_compose())
-      e.map = compose_parts_device(found, in_split, out_split, device, *e.device);
+      e.map = compose_parts_device(found, in_split, out_split, device, *e.device, store.device);
     else
 #endif
       e.map = compose_parts(found, in_split, out_split);
@@ -976,6 +1064,14 @@ KernelMapCache::Stats KernelMapCache::stats() const {
   s.part_hits = impl_->parts.hits;
   s.part_misses = impl_->parts.misses;
   s.part_bytes = impl_->parts.bytes;
+  auto &device = impl_->parts.device;
+  std::lock_guard<std::mutex> device_lock(device.mutex);
+  device.prune();
+  s.part_device_bytes = device.bytes;
+  s.part_device_peak_bytes = device.peak_bytes;
+  s.part_device_hits = device.hits;
+  s.part_device_misses = device.misses;
+  s.part_device_groups = device.lru.size();
   return s;
 }
 
@@ -992,6 +1088,18 @@ void KernelMapCache::set_part_reuse_bytes(size_t max_bytes) {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->parts.budget = max_bytes;
   impl_->parts.evict();
+  auto &device = impl_->parts.device;
+  std::lock_guard<std::mutex> device_lock(device.mutex);
+  device.prune();
+}
+
+void KernelMapCache::set_part_device_bytes(size_t max_bytes) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  auto &device = impl_->parts.device;
+  std::lock_guard<std::mutex> device_lock(device.mutex);
+  device.budget = max_bytes;
+  device.prune();
+  device.trim();
 }
 
 AdaptiveKernelMap build_adaptive_kernel_map(const AdaptiveSparseTensor &input,

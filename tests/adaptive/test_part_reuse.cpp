@@ -4,6 +4,10 @@
 // build, built one by one or reused from earlier batches.
 #include <algorithm>
 #include <vector>
+#ifdef USE_CUDA
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
+#endif
 
 #include "MinkowskiEngine/adaptive/adaptive.hpp"
 #include "MinkowskiEngine/adaptive/adaptive_topology.hpp"
@@ -366,4 +370,152 @@ TEST(part_reuse_device_compose_then_cpu_convolution) {
         const auto y = adaptive_convolution(on_cuda, w.to(torch::kCUDA), kc).features().cpu();
         CHECK_ALLCLOSE(y, want, 1e-12, 1e-12);
     }
+}
+
+
+namespace {
+struct DevicePartBudget {
+    explicit DevicePartBudget(size_t bytes) {
+        KernelMapCache::instance().set_part_device_bytes(bytes);
+    }
+    ~DevicePartBudget() { KernelMapCache::instance().set_part_device_bytes(size_t(-1)); }
+};
+}
+
+// Retention limits change cache lifetime only: the composed map, forwards and backwards
+// remain exact, including when an upload is larger than the complete budget.
+TEST(part_reuse_device_budget_zero_and_tiny_are_exact) {
+    if (!torch::cuda::is_available()) throw mink_test::Skip("CUDA not available");
+    for (size_t bytes : {size_t(0), size_t(1), size_t(1) << 20}) {
+        DevicePartBudget budget(bytes);
+        check_conv(torch::kCUDA); // both modes, deterministic float64 forwards and gradients
+        CHECK(KernelMapCache::instance().stats().part_device_bytes <= bytes);
+    }
+}
+
+TEST(part_reuse_device_budget_evicts_backing_groups) {
+    if (!torch::cuda::is_available()) throw mink_test::Skip("CUDA not available");
+    const auto cfg = make_config(3, 2.0, 0.0);
+    std::vector<AdaptiveSparseTensor> samples;
+    for (int i = 0; i < 4; ++i) samples.push_back(make_sample(150 + i, 3, cfg));
+    for (auto mode : {AdaptiveConvMode::CenterSampled, AdaptiveConvMode::VolumeWeighted}) {
+        AdaptiveKernelConfig kc;
+        kc.mode = mode;
+        auto batch = make_batch(samples, {0, 1, 2, 3}, 6, cfg);
+        auto moved = make_batch(samples, {3, 2, 1, 0}, 6, cfg, 100).to(torch::kCUDA);
+        const auto expected = full_build(moved, kc);
+        DevicePartBudget unlimited(size_t(-1));
+        PartReuse on(size_t(1) << 30);
+        auto &cache = KernelMapCache::instance();
+        cache.get_or_build(batch, kc); // host parts, no device copies
+        CHECK_EQ(cache.stats().part_device_bytes, size_t(0));
+        const auto held = cache.get_or_build(moved, kc, false);
+        CHECK(!held.map.in_index.defined());
+        const auto before = cache.stats();
+        const size_t pair_bytes = mode == AdaptiveConvMode::CenterSampled ? 4 : 12;
+        CHECK_EQ(before.part_device_bytes,
+                 size_t(expected.map.in_index.numel()) * pair_bytes);
+        CHECK_EQ(before.part_device_groups, size_t(1));
+        CHECK_EQ(before.part_device_misses, size_t(4));
+
+        cache.set_part_device_bytes(before.part_device_bytes - 1);
+        CHECK_EQ(cache.stats().part_device_bytes, size_t(0)); // whole slab, not just one view
+        CHECK_EQ(cache.stats().part_device_groups, size_t(0));
+        CHECK_EQ(cache.stats().part_bytes, before.part_bytes); // independent host cache
+        const auto a = held.device->get(held.map, torch::kCUDA, torch::kFloat64, true);
+        CHECK(torch::equal(a.in_index.cpu(), expected.map.in_index));
+        CHECK(torch::equal(a.out_index.cpu(), expected.map.out_index));
+        CHECK(torch::equal(a.weight.cpu(), expected.map.weight));
+        check_same_entry(cache.get_or_build(moved, kc), expected); // host materialization after eviction
+
+        cache.set_part_device_bytes(before.part_device_bytes);
+        auto another = make_batch(samples, {0, 2, 1, 3}, 6, cfg, 200).to(torch::kCUDA);
+        cache.get_or_build(another, kc, false);
+        CHECK_EQ(cache.stats().part_device_bytes, before.part_device_bytes);
+        CHECK_EQ(cache.stats().part_device_misses, size_t(8));
+        cache.set_part_reuse_bytes(0);
+        CHECK_EQ(cache.stats().part_device_bytes, size_t(0));
+        CHECK_EQ(cache.stats().part_device_groups, size_t(0));
+        cache.clear();
+        CHECK_EQ(cache.stats().part_device_peak_bytes, size_t(0));
+    }
+}
+
+TEST(part_reuse_device_budget_lru_and_duplicate_parts) {
+    if (!torch::cuda::is_available()) throw mink_test::Skip("CUDA not available");
+    const auto cfg = make_config(3, 2.0, 0.0);
+    std::vector<AdaptiveSparseTensor> samples;
+    for (int i = 0; i < 4; ++i) samples.push_back(make_sample(170 + i, 3, cfg));
+    AdaptiveKernelConfig kc;
+    DevicePartBudget unlimited(size_t(-1));
+    PartReuse on(size_t(1) << 30);
+    auto &cache = KernelMapCache::instance();
+    cache.get_or_build(make_batch(samples, {0, 1, 2, 3}, 6, cfg), kc);
+    auto run = [&](const std::vector<int> &order, int start) {
+        auto b = make_batch(samples, order, 6, cfg, start).to(torch::kCUDA);
+        return cache.get_or_build(b, kc, false);
+    };
+    run({0, 1, 0, 1}, 100); // repeated samples share one upload each
+    auto first = cache.stats();
+    CHECK_EQ(first.part_device_misses, size_t(2));
+    CHECK_EQ(first.part_device_groups, size_t(1));
+    run({2, 3}, 200);
+    auto both = cache.stats();
+    CHECK_EQ(both.part_device_misses, size_t(4));
+    CHECK_EQ(both.part_device_groups, size_t(2));
+    const size_t second_bytes = both.part_device_bytes - first.part_device_bytes;
+    CHECK(second_bytes > 0);
+    run({1, 0}, 300); // touch the first upload: evict the second, older group
+    cache.set_part_device_bytes(std::max(first.part_device_bytes, second_bytes));
+    CHECK_EQ(cache.stats().part_device_bytes, first.part_device_bytes);
+    CHECK_EQ(cache.stats().part_device_groups, size_t(1));
+    run({0, 1}, 400);
+    CHECK_EQ(cache.stats().part_device_misses, size_t(4));
+    run({2, 3}, 500);
+    CHECK_EQ(cache.stats().part_device_misses, size_t(6));
+    CHECK_EQ(cache.stats().part_device_bytes, second_bytes);
+    cache.set_part_device_bytes(0);
+    CHECK_EQ(cache.stats().part_device_bytes, size_t(0));
+    run({2, 3, 2, 3}, 600);
+    CHECK_EQ(cache.stats().part_device_misses, size_t(8));
+    CHECK_EQ(cache.stats().part_device_bytes, size_t(0));
+}
+
+
+TEST(part_reuse_device_budget_cross_stream_eviction) {
+    if (!torch::cuda::is_available()) throw mink_test::Skip("CUDA not available");
+#ifdef USE_CUDA
+    const auto cfg = make_config(3, 2.0, 0.0);
+    std::vector<AdaptiveSparseTensor> samples;
+    for (int i = 0; i < 4; ++i) samples.push_back(make_sample(190 + i, 3, cfg));
+    AdaptiveKernelConfig kc;
+    kc.mode = AdaptiveConvMode::VolumeWeighted;
+    auto original = make_batch(samples, {0, 1, 2, 3}, 6, cfg);
+    auto first = make_batch(samples, {3, 1, 2, 0}, 6, cfg, 100).to(torch::kCUDA);
+    auto second = make_batch(samples, {2, 3, 0, 1}, 6, cfg, 200).to(torch::kCUDA);
+    const auto expected = full_build(second, kc);
+    DevicePartBudget unlimited(size_t(-1));
+    PartReuse on(size_t(1) << 30);
+    auto &cache = KernelMapCache::instance();
+    cache.get_or_build(original, kc);
+    const auto first_entry = cache.get_or_build(first, kc, false); // upload on default stream
+    const auto stream = c10::cuda::getStreamFromPool();
+    KernelMapEntry held;
+    {
+        c10::cuda::CUDAStreamGuard guard(stream);
+        held = cache.get_or_build(second, kc, false); // use that storage on a different stream
+        cache.set_part_device_bytes(0); // discard cached source handles immediately after launch
+        CHECK_EQ(cache.stats().part_device_bytes, size_t(0));
+    }
+    // Force allocator reuse attempts on the allocation's original stream before waiting.
+    std::vector<at::Tensor> churn;
+    for (int i = 0; i < 16; ++i)
+        churn.push_back(torch::zeros({expected.map.in_index.numel() * 3},
+                                     torch::TensorOptions().device(torch::kCUDA).dtype(torch::kInt32)));
+    stream.synchronize();
+    const auto arrays = held.device->get(held.map, torch::kCUDA, torch::kFloat64, true);
+    CHECK(torch::equal(arrays.in_index.cpu(), expected.map.in_index));
+    CHECK(torch::equal(arrays.out_index.cpu(), expected.map.out_index));
+    CHECK(torch::equal(arrays.weight.cpu(), expected.map.weight));
+#endif
 }

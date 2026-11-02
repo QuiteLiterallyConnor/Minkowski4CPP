@@ -85,6 +85,7 @@ struct Args {
     int64_t samples = 64;
     int epochs = 3;
     double part_reuse_mb = 0.0;
+    double part_device_mb = -1.0; // < 0 preserves unlimited device caching
     std::string batch_device = "cpu";
     int device_compose = 1;
 };
@@ -112,6 +113,7 @@ Args parse(int argc, char** argv) {
         else if (k == "--samples") a.samples = std::atoll(v.c_str());
         else if (k == "--epochs") a.epochs = std::atoi(v.c_str());
         else if (k == "--part-reuse-mb") a.part_reuse_mb = std::atof(v.c_str());
+        else if (k == "--part-device-mb") a.part_device_mb = std::atof(v.c_str());
         else if (k == "--batch-device") a.batch_device = v;
         else if (k == "--device-compose") a.device_compose = std::atoi(v.c_str());
         else {
@@ -299,9 +301,12 @@ int run_batches(const Args& a) {
     print("batch", static_cast<double>(a.batch));
     print("leaves_per_sample", static_cast<double>(leaves) / a.samples);
     print("part_reuse_mb", a.part_reuse_mb);
+    print("part_device_mb", a.part_device_mb);
     auto& cache = KernelMapCache::instance();
     cache.clear();
     cache.set_part_reuse_bytes(static_cast<size_t>(a.part_reuse_mb * 1048576.0));
+    cache.set_part_device_bytes(a.part_device_mb < 0 ? size_t(-1) :
+                               static_cast<size_t>(a.part_device_mb * 1048576.0));
     std::vector<double> first, later;
     double pairs = 0;
     std::vector<int64_t> order(static_cast<size_t>(a.samples));
@@ -351,6 +356,18 @@ int run_batches(const Args& a) {
     print("part_hits", static_cast<double>(st.part_hits));
     print("part_misses", static_cast<double>(st.part_misses));
     print("part_store_mb", static_cast<double>(st.part_bytes) / 1048576.0);
+    print("part_device_store_mb", static_cast<double>(st.part_device_bytes) / 1048576.0);
+    print("part_device_peak_mb", static_cast<double>(st.part_device_peak_bytes) / 1048576.0);
+    print("part_device_hits", static_cast<double>(st.part_device_hits));
+    print("part_device_misses", static_cast<double>(st.part_device_misses));
+    print("part_device_groups", static_cast<double>(st.part_device_groups));
+#ifdef USE_CUDA
+    if (dev.is_cuda()) {
+        const auto mem = c10::cuda::CUDACachingAllocator::getDeviceStats(dev.index() < 0 ? 0 : dev.index());
+        print("cuda_max_alloc_mb", mem.allocated_bytes[0].peak / 1048576.0);
+        print("cuda_max_reserved_mb", mem.reserved_bytes[0].peak / 1048576.0);
+    }
+#endif
     cache.set_part_reuse_bytes(0);
     cache.clear();
     print_peak_ws();

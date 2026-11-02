@@ -133,6 +133,11 @@ public:
     size_t part_hits = 0;   // parts whose map came from the part store
     size_t part_misses = 0; // parts that had to be built
     size_t part_bytes = 0;  // host bytes held by the part store
+    size_t part_device_bytes = 0; // retained CUDA upload storage, counted once per backing slab
+    size_t part_device_peak_bytes = 0;
+    size_t part_device_hits = 0;
+    size_t part_device_misses = 0;
+    size_t part_device_groups = 0;
   };
 
   static KernelMapCache &instance();
@@ -147,6 +152,12 @@ public:
   void set_capacity(size_t max_entries);
   // Byte budget of the part store; 0 (the default) turns part reuse off and frees the store.
   void set_part_reuse_bytes(size_t max_bytes);
+  // Independent byte budget for retained CUDA part copies across all devices. Defaults to
+  // size_t(-1), preserving unlimited caching. Zero disables retention (composition still
+  // works). Whole upload groups are evicted least-recently-used, because their parts share
+  // backing storage. Excludes batch maps, allocator reservation, and live operation scratch;
+  // an in-flight composition may temporarily keep evicted storage alive. Host maps stay cached.
+  void set_part_device_bytes(size_t max_bytes);
 
 private:
   KernelMapCache();

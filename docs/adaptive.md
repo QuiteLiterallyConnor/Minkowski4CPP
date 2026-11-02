@@ -236,6 +236,39 @@ dropped least recently used first beyond the byte budget. `stats()` reports
 same way, so every layer of an encoder benefits. Moving samples by whole level-0 cells
 keeps them identical; any other offset makes them new content.
 
+The host part budget does not include CUDA uploads. CUDA composition packs multiple parts
+into shared backing allocations; an individual part's tensor view can therefore keep an
+entire upload alive. Set an independent retention budget when device memory is constrained:
+
+```cpp
+auto &cache = KernelMapCache::instance();
+cache.set_part_device_bytes(size_t(32) << 20); // cap retained upload storage at 32 MiB
+// cache.set_part_device_bytes(0);            // compose without retaining part uploads
+// cache.set_part_device_bytes(size_t(-1));   // unlimited retention (backward-compatible default)
+```
+
+The budget is shared across CUDA devices and evicts least recently used **upload groups**,
+so every view of the same allocation is removed together. Host part maps remain available;
+evicted data are uploaded again when needed. An upload larger than the budget is used for
+the current composition without retention. Repeated parts in one batch share one upload.
+`stats()` reports `part_device_bytes`, `part_device_peak_bytes`, `part_device_groups`,
+`part_device_hits`, and `part_device_misses`; hit/miss counters count distinct parts per
+composition. Clearing the cache resets these counters; changing a budget does not reset
+the historical peak. Host cache eviction also releases device ownership.
+
+This cap covers live tensor storage retained for part reuse, counted once per backing
+allocation. It excludes composed batch maps, CUDA allocator reservation, and active
+operation temporaries. A running composition retains its source tensors until its CUDA
+stream finishes, so reducing a budget is not a global instantaneous VRAM limit. Allocator
+stream tracking keeps source storage valid when another stream uses an upload that is
+evicted immediately after kernel launch. Smaller budgets can trade training throughput
+for memory; compare synchronized measurements for the actual sample distribution.
+
+The batch kernel-map benchmark accepts `--part-device-mb M` (`-1` unlimited, `0` no
+retention). It reports retained device bytes, allocator peak allocated/reserved memory,
+first-epoch and later-epoch latency, and peak process working set. Use matched sample
+counts, seeds, modes, batch sizes and devices when comparing budgets.
+
 ## Limits and measurements
 
 The README's 20K-point CPU benchmark reported 41,376 adaptive voxels versus
