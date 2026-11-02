@@ -192,6 +192,11 @@ file(GLOB MINK_AUTOGRAD_SOURCES CONFIGURE_DEPENDS
 list(APPEND MINK_DUAL_BACKEND_SOURCES ${MINK_AUTOGRAD_SOURCES})
 
 if(CPU_ONLY)
+    # The unified .cu implementation below includes the CPU backend. Retaining
+    # the legacy .cpp implementation creates duplicate CoordinateManager symbols
+    # when a static-library consumer needs symbols from both translation units.
+    list(REMOVE_ITEM MINK_CPU_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/coordinate_manager.cpp")
     set_source_files_properties(${MINK_DUAL_BACKEND_SOURCES}
         PROPERTIES LANGUAGE CXX)
     if(MSVC)
@@ -438,6 +443,15 @@ if(MINK_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/utils)
 
+    if(CPU_ONLY)
+        get_target_property(_mink_cpu_library_sources minkowski_cpp SOURCES)
+        set(_mink_cpu_source_file "${CMAKE_CURRENT_BINARY_DIR}/mink-cpu-library-sources.txt")
+        file(WRITE "${_mink_cpu_source_file}" "${_mink_cpu_library_sources}")
+        add_test(NAME cmake_cpu_coordinate_manager_sources
+            COMMAND ${CMAKE_COMMAND} -DSOURCE_FILE=${_mink_cpu_source_file}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_cpu_coordinate_manager.cmake)
+    endif()
+
     add_executable(train
         tests/train.cpp
     )
@@ -544,6 +558,7 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         tests/gaussian/test_gaussian_render.cpp
         tests/gaussian/test_gaussian_cpu_raster.cpp
         tests/gaussian/test_gaussian_cuda_backward.cpp
+        tests/gaussian/test_gaussian_adaptive.cpp
     )
 
     target_compile_definitions(gaussian_tests PRIVATE
@@ -626,8 +641,68 @@ if(MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
         endif()
     endif()
 
+    if(MINK_BUILD_GAUSSIAN_BENCHMARKS AND MINKOWSKI_ENABLE_GAUSSIAN)
+        add_executable(gaussian_adaptive_bench
+            benchmarks/gaussian_adaptive_bench.cpp
+        )
+        target_link_libraries(gaussian_adaptive_bench PRIVATE minkowski_cpp)
+        target_include_directories(gaussian_adaptive_bench PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        )
+        if(MINK_TORCH_CXX_FLAGS)
+            target_compile_options(gaussian_adaptive_bench PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+            )
+        endif()
+    endif()
+
     enable_testing()
     add_test(NAME gaussian_tests COMMAND gaussian_tests)
+endif()
+
+# ============================================================
+# ML representation study (uniform / adaptive / Gaussian / adaptive+Gaussian)
+# ============================================================
+
+option(MINK_BUILD_ML_EXPERIMENTS "Build the ML representation experiments" ON)
+if(MINK_BUILD_ML_EXPERIMENTS AND MINK_BUILD_TESTS AND MINKOWSKI_ENABLE_GAUSSIAN)
+    add_executable(ml_representations
+        benchmarks/ml_representations.cpp
+    )
+    target_link_libraries(ml_representations PRIVATE minkowski_cpp)
+    target_include_directories(ml_representations PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MinkowskiEngine/src/3rdparty"
+        # third_party/json.hpp lives in tests/third_party
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    )
+    if(MINK_TORCH_CXX_FLAGS)
+        target_compile_options(ml_representations PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:${MINK_TORCH_CXX_FLAGS}>
+        )
+    endif()
+    add_executable(point_dataset_tests tests/tools/point_dataset_tests.cpp)
+    target_include_directories(point_dataset_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    add_test(NAME point_dataset_tests COMMAND point_dataset_tests)
+    add_executable(benchmark_memory_tests tests/tools/benchmark_memory_tests.cpp)
+    target_include_directories(benchmark_memory_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME benchmark_memory_tests COMMAND benchmark_memory_tests)
+    set_tests_properties(benchmark_memory_tests PROPERTIES SKIP_RETURN_CODE 77)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME ml_summary_tests
+            COMMAND "${Python3_EXECUTABLE}" -I -B "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/test_ml_representations_summary.py")
+        add_test(NAME modelnet_preprocessing_tests
+            COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_prepare_modelnet10.py")
+    endif()
+    # Smoke run: tiny dataset, one epoch per method (CPU unless CUDA is present).
+    add_test(NAME ml_representations_smoke
+        COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:ml_representations>
+                -DOUT=${CMAKE_CURRENT_BINARY_DIR}/ml_smoke
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/ml_representations_smoke.cmake)
 endif()
 
 # Windows resolves DLLs next to the executable, so without this the binaries

@@ -1,0 +1,38 @@
+{
+  "status": "passed",
+  "source": "0a4b62a83a98b091497e996773c68b6f89c38a3c",
+  "started": "2026-11-02T20:20:24.1489926+01:00",
+  "configurations": [
+    {
+      "kind": "cpu",
+      "exit": 0,
+      "binaries": [
+        {
+          "name": "ml_representations",
+          "sha256": "04F78CF7004B1B21A5D0C7498987E21DC59D8D20CC7B0DA3324496D90F49177E"
+        },
+        {
+          "name": "point_dataset_tests",
+          "sha256": "4BBF18D6D81D5DEAC75F32F799C0D316BD5E225A33481C608521823F51E54707"
+        }
+      ],
+      "completed": "2026-11-02T20:23:34.4500354+01:00"
+    },
+    {
+      "kind": "cuda",
+      "exit": 0,
+      "binaries": [
+        {
+          "name": "ml_representations",
+          "sha256": "EC62BA12F3E29C4B4C23F53C0BBD51296C2E77E805D970C69F990EEEF0C6C095"
+        },
+        {
+          "name": "point_dataset_tests",
+          "sha256": "050EED43E9FD7B3BAD36B7D4F0B683DD2E1F4147FA8796AF4117B82D8F8F7140"
+        }
+      ],
+      "completed": "2026-11-02T20:26:15.6613650+01:00"
+    }
+  ],
+  "completed": "2026-11-02T20:26:15.8652515+01:00"
+}

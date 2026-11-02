@@ -1,0 +1,7 @@
+adaptive seed 1 epoch 1 loss 1.86184 test_acc 0.635 (2.79422 s)
+adaptive seed 1 epoch 2 loss 0.881435 test_acc 0.675 (0.924522 s)
+adaptive seed 1 epoch 3 loss 0.427182 test_acc 0.75 (0.822075 s)
+adaptive seed 1 epoch 4 loss 0.202225 test_acc 0.695 (0.817357 s)
+adaptive seed 1 epoch 5 loss 0.11181 test_acc 0.72 (0.781975 s)
+adaptive seed 1 epoch 6 loss 0.0490635 test_acc 0.77 (0.822739 s)
+adaptive seed 1 acc 0.77 macroF1 0.76928 train_s 6.96289 active 368.89 params 882650

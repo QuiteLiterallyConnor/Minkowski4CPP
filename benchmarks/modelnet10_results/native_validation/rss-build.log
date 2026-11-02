@@ -1,0 +1,6 @@
+mink-build: configure args unchanged; skipping configure
+mink-build: cmake --build "C:\Users\User\Work\mink-build\gaussian-adaptive-bridge-cpu" --parallel 2 --target benchmark_memory_tests point_dataset_tests
+[0/2] Re-checking globbed directories...
+[1/3] Building CXX object CMakeFiles\point_dataset_tests.dir\tests\tools\point_dataset_tests.cpp.obj
+[2/3] Linking CXX executable point_dataset_tests.exe
+mink-build: exit 0 (configure 0s, build 3s incl. lock wait)

@@ -1,0 +1,7 @@
+uniform seed 1 epoch 1 loss 1.75536 test_acc 0.16 (7.94436 s)
+uniform seed 1 epoch 2 loss 0.684458 test_acc 0.695 (1.3518 s)
+uniform seed 1 epoch 3 loss 0.259671 test_acc 0.765 (1.34654 s)
+uniform seed 1 epoch 4 loss 0.087703 test_acc 0.755 (1.35665 s)
+uniform seed 1 epoch 5 loss 0.0359336 test_acc 0.78 (1.3556 s)
+uniform seed 1 epoch 6 loss 0.0142751 test_acc 0.77 (1.41106 s)
+uniform seed 1 acc 0.77 macroF1 0.767888 train_s 14.766 active 785.808 params 677930

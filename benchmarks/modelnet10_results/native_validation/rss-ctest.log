@@ -1,0 +1,13 @@
+Test project C:/Users/User/Work/mink-build/gaussian-adaptive-bridge-cpu
+    Start 4: point_dataset_tests
+1/4 Test #4: point_dataset_tests ..............   Passed    0.48 sec
+    Start 5: benchmark_memory_tests
+2/4 Test #5: benchmark_memory_tests ...........   Passed    0.07 sec
+    Start 6: ml_summary_tests
+3/4 Test #6: ml_summary_tests .................   Passed    9.31 sec
+    Start 7: modelnet_preprocessing_tests
+4/4 Test #7: modelnet_preprocessing_tests .....   Passed    0.38 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =  10.28 sec

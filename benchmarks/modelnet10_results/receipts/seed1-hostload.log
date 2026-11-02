@@ -1,0 +1,5 @@
+2026-11-02T20:26:33 [before] cpu_total_avg_3s=81,9% gpu(util,used,total)=42 %, 7085 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,SearchIndexer
+2026-11-02T20:27:06 [after-uniform] cpu_total_avg_2s=81,2% gpu(util,used,total)=37 %, 6887 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,SearchIndexer
+2026-11-02T20:27:29 [after-adaptive] cpu_total_avg_2s=46,7% gpu(util,used,total)=42 %, 6812 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,SearchIndexer
+2026-11-02T20:27:47 [after-gaussian] cpu_total_avg_2s=69% gpu(util,used,total)=40 %, 6827 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,SearchIndexer
+2026-11-02T20:28:09 [after-adaptive_gaussian] cpu_total_avg_2s=23,8% gpu(util,used,total)=58 %, 6827 MiB, 8192 MiB top_cpu_time=explorer,MsMpEng,System,ChatGPT,Memory Compression,SearchIndexer

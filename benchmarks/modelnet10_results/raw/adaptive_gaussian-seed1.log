@@ -1,0 +1,7 @@
+adaptive_gaussian seed 1 epoch 1 loss 1.83125 test_acc 0.635 (2.08853 s)
+adaptive_gaussian seed 1 epoch 2 loss 0.754339 test_acc 0.735 (0.69112 s)
+adaptive_gaussian seed 1 epoch 3 loss 0.30676 test_acc 0.785 (0.633572 s)
+adaptive_gaussian seed 1 epoch 4 loss 0.103147 test_acc 0.79 (0.668732 s)
+adaptive_gaussian seed 1 epoch 5 loss 0.0575471 test_acc 0.8 (0.669192 s)
+adaptive_gaussian seed 1 epoch 6 loss 0.019237 test_acc 0.795 (0.67068 s)
+adaptive_gaussian seed 1 acc 0.795 macroF1 0.7957 train_s 5.42183 active 190.243 params 885242

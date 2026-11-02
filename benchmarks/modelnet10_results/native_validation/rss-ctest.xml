@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="(empty)"
+	tests="4"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname=""
+	time="10"
+	timestamp="2026-11-02T20:39:30"
+	>
+	<testcase name="point_dataset_tests" classname="point_dataset_tests" time="0.483696" status="run">
+		<properties/>
+		<system-out>22 point dataset cases passed; 0 failed
+</system-out>
+	</testcase>
+	<testcase name="benchmark_memory_tests" classname="benchmark_memory_tests" time="0.0699661" status="run">
+		<properties/>
+		<system-out>peak RSS MiB before=4.40625 allocated=68.4219 after_free=68.4219 source=GetProcessMemoryInfo.PeakWorkingSetSize; lifetime high-water and unit checks passed
+</system-out>
+	</testcase>
+	<testcase name="ml_summary_tests" classname="ml_summary_tests" time="9.30992" status="run">
+		<properties/>
+		<system-out>....................
+----------------------------------------------------------------------
+Ran 20 tests in 9.077s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="modelnet_preprocessing_tests" classname="modelnet_preprocessing_tests" time="0.376234" status="run">
+		<properties/>
+		<system-out>.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.143s
+
+OK
+</system-out>
+	</testcase>
+</testsuite>

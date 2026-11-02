@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="(empty)"
+	tests="11"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname=""
+	time="160"
+	timestamp="2026-11-02T20:23:34"
+	>
+	<testcase name="cmake_source_filter" classname="cmake_source_filter" time="0.0510557" status="run">
+		<properties/>
+		<system-out>-- source filter ok: /[^/]*(test|example)[^/]*$
+</system-out>
+	</testcase>
+	<testcase name="ab_compare_selftest" classname="ab_compare_selftest" time="3.55714" status="run">
+		<properties/>
+		<system-out>test_budget_stops_with_exit_3 (__main__.AbCompareTest.test_budget_stops_with_exit_3) ... 2026-11-02T20:23:35 fake base r0 exit 0 wall 0.3s
+2026-11-02T20:23:35 fake cand r0 exit 0 wall 0.3s
+2026-11-02T20:23:35 fake block done rc=3 timed rounds 1/4
+ok
+test_failure_exit_1 (__main__.AbCompareTest.test_failure_exit_1) ... 2026-11-02T20:23:36 fake base r0 exit 0 wall 0.2s
+2026-11-02T20:23:36 fake cand r0 exit 7 wall 0.1s
+2026-11-02T20:23:36 fake block done rc=1 timed rounds 0/2
+ok
+test_fixed_order (__main__.AbCompareTest.test_fixed_order) ... 2026-11-02T20:23:36 fake base w0 exit 0 wall 0.1s
+2026-11-02T20:23:36 fake cand w0 exit 0 wall 0.1s
+2026-11-02T20:23:36 fake base r1 exit 0 wall 0.1s
+2026-11-02T20:23:36 fake cand r1 exit 0 wall 0.1s
+2026-11-02T20:23:36 fake base r2 exit 0 wall 0.1s
+2026-11-02T20:23:36 fake cand r2 exit 0 wall 0.1s
+2026-11-02T20:23:36 fake base r3 exit 0 wall 0.1s
+2026-11-02T20:23:36 fake cand r3 exit 0 wall 0.1s
+2026-11-02T20:23:36 fake block done rc=0 timed rounds 3/3
+ok
+test_interleaved_sum...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="adaptive_tests" classname="adaptive_tests" time="72.2345" status="run">
+		<properties/>
+		<system-out>[ PASS ] geometry_voxel_size_halves_per_level
+[ PASS ] geometry_anisotropic_voxel_size
+[ PASS ] geometry_bounds_and_center
+[ PASS ] geometry_half_open_ownership
+[ PASS ] geometry_locate_is_consistent_with_bounds
+[ PASS ] geometry_parent_child_roundtrip
+[ PASS ] geometry_parent_of_negative_coordinates_floors
+[ PASS ] geometry_children_tile_parent_exactly
+[ PASS ] geometry_keys_at_different_levels_never_collide
+[ PASS ] geometry_large_coordinates_roundtrip
+[ PASS ] geometry_two_and_four_dimensional
+[ PASS ] config_accepts_consistent_resolution
+[ PASS ] config_rejects_inconsistent_resolution
+[ PASS ] config_rejects_nonpositive_and_unsupported_depth
+[ PASS ] topology_rejects_coordinates_outside_the_exact_range
+[ PASS ] topology_rejects_out_of_range_coordinates_in_any_dimension
+[ PASS ] topology_from_points_rejects_points_outside_the_exact_range
+[ PASS ] topology_refinement_at_the_coordinate_limit_stays_exact
+[ PASS ] config_supports_anisotropic_resolution
+[ PASS ] topology_empty_tensor
+[ PASS ] topology_from_poin...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="adaptive_vs_uniform_bench_smoke" classname="adaptive_vs_uniform_bench_smoke" time="4.18197" status="run">
+		<properties/>
+		<system-out>{"kind":"case","dataset":"clustered","method":"u_coarse","device":"cpu","depth":4,"base":8.0,"channels":16,"train_points":2700,"seed":0,"dataset_note":"12 Gaussian clusters (sigma 2/4/8) = 90%, uniform background 10%","dataset_load_ms":24.0855,"build_ms":{"med":0.4753,"min":0.4753,"max":0.4753},"voxels":709,"levels":[709],"voxel_size":8.0,"matched_target":1024,"covered_volume":363008.0,"feature_bytes":45376,"coord_bytes_adaptive":19852,"coord_bytes_mink":11344,"accuracy":{"test_points":300,"ref_std":0.6932618056885522,"coverage":0.8266666666666667,"rmse_nearest_all":0.5192889984051806,"rmse_nearest_covered":0.46663458155926546,"nrmse_nearest_all":0.7490517927630808,"interp_nearest_ms":0.5468,"interp_multilinear_ms":0.698,"ml_queries":200,"rmse_multilinear_all":0.45820226133839537,"interp_nearest_fallback_ms":0.0832,"coverage_fallback":0.8266666666666667,"nrmse_nearest_all_fallback":0.7490517927630808,"rmse_multilinear_all_fallback":0.45820226133839537},"adaptive_engine":{"first_conv_ms":3.25,"kmap_pairs":6577...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="gaussian_tests" classname="gaussian_tests" time="38.3588" status="run">
+		<properties/>
+		<system-out>[ PASS ] gaussian3d_identity_covariance_and_density
+[ PASS ] gaussian3d_anisotropic_rotated_covariance_is_symmetric
+[ PASS ] gaussian3d_rejects_invalid_parameters
+[ PASS ] gaussian3d_overlap_sampling_and_bounds
+[ PASS ] gaussian_tensor_covariance_and_shape
+[ PASS ] gaussian_tensor_select_remove_and_filter
+[ PASS ] gaussian_tensor_concat_clone_and_empty
+[ PASS ] gaussian_tensor_transform_and_gradients
+[ PASS ] gaussian_optimizer_reduces_rgb_reconstruction_loss
+[ PASS ] gaussian_cuda_kernels_match_tensor_reference
+[ PASS ] ply_compressed_and_uncompressed_are_both_detected
+[ PASS ] ply_loads_expected_layout
+[ PASS ] ply_values_are_valid
+[ PASS ] ply_covariances_are_symmetric_positive_semidefinite
+[ PASS ] ply_filter_opacity_and_bounds
+[ PASS ] ply_select_remove_partition
+[ PASS ] ply_transform_round_trip_restores_scene
+[ PASS ] ply_optimizer_reduces_color_loss
+[ PASS ] ply_rejects_bad_files
+[ PASS ] ply_cuda_transform_matches_cpu
+[ PASS ] gaussian_render_single_gaussian_at_center
+[ PASS ] gaussian_render_empty_s...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="core_tests" classname="core_tests" time="2.77589" status="run">
+		<properties/>
+		<system-out>[ PASS ] conv_reference_self_check_dense_layout
+[ PASS ] conv_stride1_matches_dense_fp64
+[ PASS ] conv_stride1_matches_dense_fp32
+[ PASS ] conv_stride2_matches_dense_fp64
+[ PASS ] conv_stride2_matches_dense_fp32
+[ PASS ] conv_transpose_stride1_matches_dense_fp64
+[ PASS ] conv_transpose_stride2_matches_dense_fp64
+[ PASS ] conv_transpose_stride2_matches_dense_fp32
+[ PASS ] conv_square_channels_matches_dense_fp32
+[ PASS ] cpu_cuda_conv_stride1
+[ PASS ] cpu_cuda_conv_stride2
+[ PASS ] cpu_cuda_conv_transpose_stride1
+[ PASS ] cpu_cuda_avg_pooling
+[ PASS ] cpu_cuda_max_pooling
+[ PASS ] cpu_cuda_global_avg_pooling
+[ PASS ] gemm_cpu_gemm_float_all_layouts_and_transposes
+[ PASS ] gemm_cpu_gemm_double_all_layouts_and_transposes
+[ PASS ] gemm_cblas_sgemm_padded_leading_dimensions
+[ PASS ] gemm_cblas_dgemm_padded_leading_dimensions
+[ PASS ] gemm_cpu_div_double_divides
+[ PASS ] gradcheck_conv_stride1
+[ PASS ] gradcheck_conv_stride2
+[ PASS ] gradcheck_conv_transpose_stride2
+[ PASS ] gradcheck_avg_pooling_kernel3_stride1
+[ P...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="point_dataset_tests" classname="point_dataset_tests" time="0.615014" status="run">
+		<properties/>
+		<system-out>22 point dataset cases passed; 0 failed
+</system-out>
+	</testcase>
+	<testcase name="modelnet_preprocessing_tests" classname="modelnet_preprocessing_tests" time="1.19006" status="run">
+		<properties/>
+		<system-out>.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.182s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="ml_representations_smoke" classname="ml_representations_smoke" time="9.94161" status="run">
+		<properties/>
+		<system-out>uniform seed 1 epoch 1 loss 2.83558 test_acc 0.1 (0.623785 s)
+uniform seed 1 acc 0.1 macroF1 0.0181818 train_s 0.623785 active 404.067 params 677930
+adaptive seed 1 epoch 1 loss 2.92688 test_acc 0.15 (0.531258 s)
+adaptive seed 1 acc 0.15 macroF1 0.0857143 train_s 0.531258 active 194.4 params 882650
+gaussian seed 1 epoch 1 loss 2.24214 test_acc 0.1 (0.435467 s)
+gaussian seed 1 acc 0.1 macroF1 0.0210526 train_s 0.435467 active 73.8333 params 110218
+adaptive_gaussian seed 1 epoch 1 loss 2.48307 test_acc 0.15 (0.453122 s)
+adaptive_gaussian seed 1 acc 0.15 macroF1 0.0710526 train_s 0.453122 active 104.733 params 885242
+</system-out>
+	</testcase>
+	<testcase name="memory_growth_tests" classname="memory_growth_tests" time="27.3702" status="run">
+		<properties>
+			<property name="cmake_labels" value="memory"/>
+		</properties>
+		<system-out>MEMORY case=sparse_conv device=cpu warmup=30 iters=120 private_start=6.8488e+08 private_growth=0 ws_start=3.36351e+08 ws_growth=28672 cuda_alloc_start=0 cuda_alloc_growth=0
+[ PASS ] memory_growth_sparse_conv_cpu
+MEMORY case=sparse_conv device=cuda warmup=30 iters=120 private_start=1.34868e+09 private_growth=0 ws_start=7.26483e+08 ws_growth=0 cuda_alloc_start=92672 cuda_alloc_growth=0
+[ PASS ] memory_growth_sparse_conv_cuda
+MEMORY case=adaptive_conv device=cpu warmup=30 iters=120 private_start=1.32701e+09 private_growth=-1.97018e+06 ws_start=7.64408e+08 ws_growth=1.90464e+06 cuda_alloc_start=0 cuda_alloc_growth=0
+[ PASS ] memory_growth_adaptive_conv_cpu
+MEMORY case=adaptive_conv device=cuda warmup=30 iters=120 private_start=1.33863e+09 private_growth=69632 ws_start=7.71592e+08 ws_growth=65536 cuda_alloc_start=7.84947e+06 cuda_alloc_growth=0
+[ PASS ] memory_growth_adaptive_conv_cuda
+MEMORY case=adaptive_interp device=cpu warmup=30 iters=120 private_start=1.33271e+09 private_growth=0 ws_start=7.65526e+08 ws_grow...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="test_framework_contract" classname="test_framework_contract" time="0.0390756" status="run">
+		<properties/>
+		<system-out>9 test-framework contract cases passed
+</system-out>
+	</testcase>
+</testsuite>

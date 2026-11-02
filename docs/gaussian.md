@@ -151,7 +151,12 @@ For posed-image reconstruction with densification, use
 
 ## Current limitations
 
-- No Gaussian-to-sparse-voxel bridge or adaptive spatial index.
+- `gaussian_adaptive.hpp` bridges GaussianTensor and adaptive sparse voxels with
+  `gaussians_to_adaptive`, `adaptive_to_gaussians`, density refinement and
+  `find_leaves` spatial lookup. There is no uniform SparseTensor bridge.
+- Bridge topology and spatial weights are frozen with respect to geometry;
+  attribute/mass operations remain differentiable. BoxIntegral uses marginal
+  axis integrals and ignores cross-axis covariance correlations.
 - No shared SE(3) abstraction; transforms accept quaternions directly.
 - Compressed SH decoding remains unverified.
 - The renderer's fused CUDA path covers tile compositing; projection and
