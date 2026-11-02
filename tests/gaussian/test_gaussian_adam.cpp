@@ -57,13 +57,17 @@ TEST(gaussian_fused_adam_matches_libtorch_update) {
                            1.0f / static_cast<float>(bias2), static_cast<float>(eps),
                            static_cast<float>(-lr / bias1)};
     gd::adam_update_cuda(p, g, m1, m2, k);
-    const double dp = (p - p_ref).abs().max().item<double>() / lr; // in units of one lr step
+    // The two updates can differ in the last bit (different rounding of the same formula), so
+    // p + update can land on a neighbouring float: measure parameter differences in units of the
+    // float spacing at |p| + lr (at most one more ulp per step) and the moments relatively.
+    const auto spacing = (p_ref.abs() + lr) * std::ldexp(1.0, -23);
+    const double ulps = ((p - p_ref).abs() / spacing).max().item<double>();
     const double dm1 = max_rel(m1, m1_ref), dm2 = max_rel(m2, m2_ref);
     const int64_t differ = (p != p_ref).sum().item<int64_t>();
-    std::cout << "         step " << step << ": max |dp| / lr " << dp << ", m1 rel " << dm1
+    std::cout << "         step " << step << ": max |dp| " << ulps << " ulp, m1 rel " << dm1
               << ", m2 rel " << dm2 << ", parameters not bit-identical " << differ << " of " << n
               << "\n";
-    CHECK(dp < 1e-5);
+    CHECK(ulps <= step + 1e-9);
     CHECK(dm1 < 1e-6);
     CHECK(dm2 < 1e-6);
     CHECK(torch::isfinite(p).all().item<bool>());
