@@ -166,6 +166,11 @@ void expect_no_growth(const std::string &name, bool cuda, const std::function<vo
 }
 
 torch::Device require_device(bool cuda) {
+#if defined(__SANITIZE_ADDRESS__)
+    // ASan keeps freed blocks in its quarantine (256 MB by default) and adds allocator metadata, so process
+    // memory grows by design (measured: sparse_conv +269 MB over 120 iterations); run these in a normal build.
+    throw mink_test::Skip("memory growth is not measurable under AddressSanitizer");
+#endif
     if (!cuda) return torch::kCPU;
 #ifdef USE_CUDA
     if (at::cuda::is_available()) return torch::kCUDA;
