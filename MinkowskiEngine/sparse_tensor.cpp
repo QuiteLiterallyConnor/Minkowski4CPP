@@ -1,5 +1,6 @@
 #include "sparse_tensor.hpp"
 #include <stdexcept>
+#include <limits>
 
 namespace minkowski {
 
@@ -245,9 +246,14 @@ at::Tensor SparseTensor::apply_quantization(
     }
 
     case SparseTensorQuantizationMode::MAX_POOL: {
-
+      // Start from -inf, not 0: scatter_reduce's amax backward also counts the initial value as
+      // a tied maximum (even with include_self=false), which halved the gradient of a maximum
+      // of exactly 0. Every row has at least one point, so no row keeps the initial value.
       at::Tensor result = torch::scatter_reduce(
-          torch::zeros({static_cast<int64_t>(size), features.size(1)}, features.options()),
+          features.is_floating_point()
+              ? torch::full({static_cast<int64_t>(size), features.size(1)},
+                            -std::numeric_limits<double>::infinity(), features.options())
+              : torch::zeros({static_cast<int64_t>(size), features.size(1)}, features.options()),
           0,
           inverse_mapping.unsqueeze(1).expand({-1, features.size(1)}),
           features,

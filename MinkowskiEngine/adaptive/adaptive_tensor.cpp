@@ -1,6 +1,7 @@
 #include "adaptive_tensor.hpp"
 #include "adaptive_topology.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -71,8 +72,27 @@ at::Tensor remap_features(const at::Tensor &f, const std::vector<int64_t> &src,
                      .unsqueeze(1);
     return out.index_add_(0, dst_t, g) / cnt_t;
   }
-  case Reduction::Max:
-    return torch::scatter_reduce(out, 0, dst_t.unsqueeze(1).expand({M, C}), g, "amax", false);
+  case Reduction::Max: {
+    if (!f.is_floating_point())
+      return torch::scatter_reduce(out, 0, dst_t.unsqueeze(1).expand({M, C}), g, "amax", false);
+    // scatter_reduce's backward splits the gradient among every entry equal to the maximum,
+    // including the initial value of `out` even with include_self=false. Starting from 0, a
+    // maximum of exactly 0 (e.g. ReLU outputs) then lost half of its gradient at every pooling
+    // step. Start from -inf instead, and give rows without entries their 0 back.
+    auto mx = torch::scatter_reduce(
+        torch::full({nnew, C}, -std::numeric_limits<double>::infinity(), f.options()), 0,
+        dst_t.unsqueeze(1).expand({M, C}), g, "amax", false);
+    std::vector<uint8_t> empty(static_cast<size_t>(nnew), 1);
+    for (int64_t d : dst)
+      empty[static_cast<size_t>(d)] = 0;
+    if (std::find(empty.begin(), empty.end(), uint8_t(1)) == empty.end())
+      return mx;
+    auto mask = torch::from_blob(empty.data(), {nnew}, torch::kUInt8)
+                    .to(torch::kBool)
+                    .to(dev)
+                    .unsqueeze(1);
+    return mx.masked_fill(mask, 0.0);
+  }
   }
   return out;
 }

@@ -150,6 +150,56 @@ TEST(gradient_refine_split_and_coarsen_sum_are_linear) {
     CHECK(torch::isfinite(f.grad()).all().item<bool>());
 }
 
+// A maximum of exactly 0 keeps the whole gradient (torch's amax backward also counted the
+// zero-initialised output as a tied maximum and halved it at every pooling step).
+TEST(gradient_max_pool_at_zero_keeps_unit_gradient) {
+    auto base = make_mixed(1);
+    // Children of (1,0,0)@0: values 0 and negatives; level-0 leaves: 0 and 3.
+    auto f0 = -torch::rand({base.size(), 1}, torch::kFloat64) - 0.5;
+    const int64_t z_child = base.index_of({2, 0, 0}, 1);
+    const int64_t z_leaf = base.index_of({0, 1, 0}, 0);
+    const int64_t pos_leaf = base.index_of({0, 0, 0}, 0);
+    CHECK(z_child >= 0 && z_leaf >= 0 && pos_leaf >= 0);
+    f0[z_child][0] = 0.0;
+    f0[z_leaf][0] = 0.0;
+    f0[pos_leaf][0] = 3.0;
+    for (const at::Device dev : {at::Device(at::kCPU), at::Device(at::kCUDA)}) {
+        if (dev.is_cuda() && !torch::cuda::is_available())
+            continue;
+        auto f = f0.to(dev).detach().clone().requires_grad_(true);
+        auto t = base.with_features(f);
+        auto pooled = adaptive_pool(t, 0, Reduction::Max);
+        CHECK_EQ(pooled.size(), int64_t(3));
+        pooled.features().sum().backward();
+        auto g = f.grad().cpu();
+        CHECK_NEAR(g[z_child][0].item<double>(), 1.0, 0.0); // the parent's maximum is 0
+        CHECK_NEAR(g[z_leaf][0].item<double>(), 1.0, 0.0);  // an unmerged leaf holding 0
+        CHECK_NEAR(g[pos_leaf][0].item<double>(), 1.0, 0.0);
+        CHECK_NEAR(g.sum().item<double>(), 3.0, 0.0);
+        // The same through resample_to (a reference cell without inputs stays 0).
+        auto coarse = adaptive_pool(base, 0, Reduction::Max);
+        auto f2 = f0.to(dev).detach().clone().requires_grad_(true);
+        auto r = base.with_features(f2).resample_to(coarse, Reduction::Max);
+        CHECK(torch::equal(r.features().detach().cpu(), pooled.features().detach().cpu()));
+        r.features().sum().backward();
+        CHECK_NEAR(f2.grad().cpu()[z_child][0].item<double>(), 1.0, 0.0);
+    }
+}
+
+TEST(gradient_max_pool_rows_without_entries_stay_zero) {
+    // resample_to onto a reference with a cell no input overlaps: that row is 0, not -inf.
+    auto base = make_mixed(2);
+    auto ref = base;
+    ref.refine(AxisAlignedRegion{{0, 8, 0}, {8, 16, 8}}, 1); // (0,1,0)@0 -> 8 children
+    auto shifted = AdaptiveSparseTensor::from_voxels(
+        base.coordinates().index_select(0, torch::tensor({int64_t(0)})),
+        base.levels().index_select(0, torch::tensor({int64_t(0)})),
+        torch::full({1, 2}, -2.0, torch::kFloat64), base.config());
+    auto r = shifted.resample_to(ref, Reduction::Max);
+    CHECK(torch::isfinite(r.features()).all().item<bool>());
+    CHECK_NEAR(r.features().abs().sum().item<double>(), 4.0, 0.0); // only (0,0,0)@0 holds -2
+}
+
 TEST(gradient_topology_decisions_are_not_differentiable) {
     auto base = make_mixed(2);
     CHECK(!base.coordinates().requires_grad());
