@@ -12,6 +12,8 @@
 #include "gaussian/gaussian_render.hpp"
 #include "utils/test_framework.hpp"
 
+#ifdef USE_CUDA // the fused projection and its hook exist only in CUDA builds
+
 using namespace minkowski::gaussian;
 namespace gd = minkowski::gaussian::detail;
 
@@ -213,3 +215,5 @@ TEST(gaussian_fused_projection_empty_scene) {
   CHECK_EQ(out.image.size(0), int64_t(16));
   CHECK_NEAR(out.alpha.abs().sum().item<double>(), 0.0, 0.0);
 }
+
+#endif // USE_CUDA
